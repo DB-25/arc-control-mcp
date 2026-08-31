@@ -25,8 +25,11 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
 
+      # package.json declares os: darwin, which is true of the server but makes
+      # npm refuse to install on a Linux runner. --force overrides just that
+      # platform check; the unit tests themselves never touch Arc.
       - name: Install
-        run: npm ci
+        run: npm ci --force
 
       - name: Test
         run: npm test
