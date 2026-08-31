@@ -1,7 +1,14 @@
+import { ArcError } from '../jxa.js';
 import { TAB_ID, SELECTOR, VERBOSE, write, read, runPage, sleep } from './shared.js';
 
 const POLL_MS = 250;
 const DEFAULT_WAIT_MS = 10000;
+// An MCP client abandons a request after 60s (the SDK's own default), and once
+// it does, the timedOut payload with waitedMs and the last counts is thrown
+// away. So a caller-supplied wait is capped well inside that ceiling. Progress
+// notifications would not buy more time: a client MAY reset its clock on
+// progress and mostly does not.
+const MAX_CALLER_TIMEOUT_MS = 30000;
 const DEFAULT_SCROLL_PX = 800;
 const MAX_OPTIONS_LISTED = 25;
 const TARGET_ATTR_CHARS = 80;
@@ -15,6 +22,17 @@ const EXACT = {
 // Both are interpolated straight into page scripts, so they have to be literals.
 const matchOpts = (args) => JSON.stringify({ exact: args.exact === true });
 const verboseFlag = (args) => String(args.verbose === true);
+
+/**
+ * The spec asks a receiver of notifications/cancelled to stop work and release
+ * resources. Each poll spawns an osascript process against the user's Arc, so a
+ * loop that ignores the signal keeps prodding their browser for a result nobody
+ * will read. extra is absent when a handler is called internally, for instance
+ * by batch.
+ */
+function throwIfCancelled(extra) {
+  if (extra?.signal?.aborted) throw new ArcError('Cancelled by the caller.');
+}
 
 const TEXT_NOTE =
   '"text=Label" matches on visible text as a substring, with exact matches ranked first, so a short label also matches longer ones. ' +
@@ -112,7 +130,7 @@ export const tools = [
         verbose: VERBOSE
       }
     },
-    annotations: write('Scroll')
+    annotations: write('Scroll', { idempotent: true })
   },
   {
     name: 'wait_for_selector',
@@ -126,7 +144,14 @@ export const tools = [
         selector: SELECTOR,
         tab_id: TAB_ID,
         state: { type: 'string', enum: ['present', 'visible', 'absent'], description: 'Condition to wait for', default: 'visible' },
-        timeout_ms: { type: 'number', description: 'Give up after this long', default: DEFAULT_WAIT_MS },
+        timeout_ms: {
+          type: 'number',
+          description:
+            `Give up after this long, capped at ${MAX_CALLER_TIMEOUT_MS}ms because a longer call is killed by the client before it can answer. ` +
+            'To wait longer, call wait_for_selector again: every call returns the current counts, so repeated short waits tell you more than one long one.',
+          default: DEFAULT_WAIT_MS,
+          maximum: MAX_CALLER_TIMEOUT_MS
+        },
         exact: EXACT,
         verbose: VERBOSE
       },
@@ -283,19 +308,23 @@ export const handlers = {
   // runPage throws on a page-script failure, and that is left to propagate: a
   // bad selector is a bad selector on every poll, so retrying it to the
   // deadline would only turn a clear error into a vague timeout.
-  wait_for_selector: async (args) => {
-    const timeout = args.timeout_ms ?? DEFAULT_WAIT_MS;
+  wait_for_selector: async (args, extra) => {
+    const timeout = Math.min(args.timeout_ms ?? DEFAULT_WAIT_MS, MAX_CALLER_TIMEOUT_MS);
     const want = args.state || 'visible';
     const started = Date.now();
     let last = null;
 
     while (Date.now() - started < timeout) {
+      throwIfCancelled(extra);
       const { result, tab } = await runPage(
         args,
         `var els = A.all(${JSON.stringify(args.selector)}, null, ${matchOpts(args)});
          var vis = 0;
          for (var i = 0; i < els.length; i++) if (A.visible(els[i])) vis++;
-         return { count: els.length, visible: vis, first: els[0] ? A.describe(els[0], ${verboseFlag(args)}) : null };`
+         return { count: els.length, visible: vis, first: els[0] ? A.describe(els[0], ${verboseFlag(args)}) : null };`,
+        // Bound the probe by what is left, so a wedged call cannot push the
+        // tool past the client's timeout.
+        Math.max(timeout - (Date.now() - started), 1500)
       );
       last = { ...result, tab };
       const done =

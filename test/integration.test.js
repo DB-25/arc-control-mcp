@@ -7,8 +7,13 @@
 // Skipped otherwise, which is every default run and all of CI: Linux has no
 // Arc, and a developer running `npm test` should not have their browser
 // hijacked mid-task. They cover only what real Arc can prove: that a tab really
-// moves, that a page error really surfaces as an error, and that the counts
-// handlers report match a real DOM.
+// moves, that a page error really surfaces as an error, that the counts
+// handlers report match a real DOM, that a caller-supplied timeout really is
+// clamped, and that a cancelled wait really does stop polling.
+//
+// Every tool call below passes an explicit tab_id. A call without one resolves
+// to this agent's current tab and, failing that, to whatever tab the user is
+// looking at, which is not a thing a test may reach for.
 //
 // Tabs are opened in the agent space when one exists, are tracked under a
 // throwaway ARC_MCP_LABEL, and are closed by the test that opened them plus a
@@ -20,6 +25,15 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+// The MCP client default request timeout, and the ceiling every caller-supplied
+// wait is clamped to so a call cannot outlive it. Kept here rather than imported
+// because the point is to check the shipped numbers from outside.
+const CLIENT_DEADLINE_MS = 60000;
+const MAX_CALLER_TIMEOUT_MS = 30000;
+// A wait exits its loop between polls, so it can come back a little under the
+// ceiling without having ignored it.
+const POLL_SLACK_MS = 1000;
 
 const REASON = process.env.ARC_MCP_INTEGRATION !== '1'
   ? 'set ARC_MCP_INTEGRATION=1 to run the tests that drive Arc'
@@ -218,5 +232,76 @@ describe('integration: drives the real Arc browser', () => {
         return true;
       }
     );
+  });
+
+  it('clamps a caller-supplied timeout_ms to the ceiling instead of honouring it', { skip }, async () => {
+    // The P0, against real Arc. timeout_ms had no ceiling, so a caller asking
+    // for 90000 was killed by the client at 60000 and its timedOut payload,
+    // with waitedMs and the last counts, was thrown away. Asking for 90000 now
+    // gives up at the ceiling with a real answer.
+    //
+    // This case takes about MAX_CALLER_TIMEOUT_MS to run, and that duration is
+    // the assertion: there is no way to prove a wait was shortened except by
+    // watching it end early.
+    await withTab(urlOne, async (tabId) => {
+      const started = Date.now();
+      const out = await interact.wait_for_selector({
+        tab_id: tabId,
+        selector: '#never-appears',
+        state: 'present',
+        timeout_ms: 3 * MAX_CALLER_TIMEOUT_MS
+      });
+      const elapsed = Date.now() - started;
+
+      assert.equal(out.ok, false, 'a selector that never appears is not a success');
+      assert.equal(out.timedOut, true);
+      assert.ok(
+        elapsed < CLIENT_DEADLINE_MS,
+        `the call took ${elapsed}ms, so the client would have abandoned it at ${CLIENT_DEADLINE_MS}ms`
+      );
+      assert.ok(
+        out.waitedMs >= MAX_CALLER_TIMEOUT_MS - POLL_SLACK_MS,
+        `gave up after only ${out.waitedMs}ms, well short of the ${MAX_CALLER_TIMEOUT_MS}ms ceiling`
+      );
+      assert.match(out.note, new RegExp(`${MAX_CALLER_TIMEOUT_MS}ms`), 'the note does not report the ceiling it used');
+    });
+  });
+
+  it('stops a wait when the caller cancels, instead of polling Arc to the deadline', { skip }, async () => {
+    // Every poll spawns an osascript process against the user's Arc, so a loop
+    // that ignores notifications/cancelled keeps prodding their browser for a
+    // result nobody will read.
+    await withTab(urlOne, async (tabId) => {
+      const cancelled = (error) => {
+        assert.ok(error instanceof ArcError);
+        assert.match(error.message, /Cancelled/);
+        return true;
+      };
+
+      // Aborted before the first poll: nothing should reach Arc at all.
+      await assert.rejects(
+        () => interact.wait_for_selector(
+          { tab_id: tabId, selector: '#never-appears', timeout_ms: MAX_CALLER_TIMEOUT_MS },
+          { signal: AbortSignal.abort() }
+        ),
+        cancelled
+      );
+
+      // Aborted mid-wait: it has to stop at the next poll rather than at the
+      // timeout, so the elapsed time is what proves the signal was noticed.
+      const controller = new AbortController();
+      const started = Date.now();
+      const waiting = navigation.wait_for_load(
+        { tab_id: tabId, url_contains: 'never-matches-this-url', timeout_ms: MAX_CALLER_TIMEOUT_MS },
+        { signal: controller.signal }
+      );
+      controller.abort();
+      await assert.rejects(() => waiting, cancelled);
+      const elapsed = Date.now() - started;
+      assert.ok(
+        elapsed < MAX_CALLER_TIMEOUT_MS / 2,
+        `the cancelled wait ran for ${elapsed}ms of its ${MAX_CALLER_TIMEOUT_MS}ms budget`
+      );
+    });
   });
 });

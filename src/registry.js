@@ -38,7 +38,9 @@ for (const [name, module] of Object.entries(MODULES)) {
     if (HANDLERS[tool.name]) throw new Error(`Duplicate tool name ${tool.name} in module ${name}`);
     if (!module.handlers[tool.name]) throw new Error(`Module ${name} declares ${tool.name} with no handler`);
     validate(name, tool);
-    TOOLS.push(tool);
+    // Display precedence is top-level title, then annotations.title, then name.
+    // Deriving it here beats repeating the same string on 26 tool definitions.
+    TOOLS.push(tool.title ? tool : { ...tool, title: tool.annotations.title });
     HANDLERS[tool.name] = module.handlers[tool.name];
   }
   for (const handlerName of Object.keys(module.handlers)) {

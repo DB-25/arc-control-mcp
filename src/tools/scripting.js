@@ -1,5 +1,10 @@
-import { TAB_ID, runPage } from './shared.js';
+import { TAB_ID, write, runPage } from './shared.js';
 import { ArcError } from '../jxa.js';
+
+// Cumulative budget for everything batch reports back. Individual read tools cap
+// themselves at 20000 characters each, so five of them already overshoot what a
+// client will accept, and a clipped response is unreadable rather than short.
+const MAX_BATCH_CHARS = 60000;
 
 export const tools = [
   {
@@ -13,11 +18,13 @@ export const tools = [
       },
       required: ['code']
     },
-    annotations: { title: 'Execute JavaScript', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+    annotations: write('Execute JavaScript', { destructive: true })
   },
   {
     name: 'batch',
-    description: 'Run several tools in order in one call, passing the same tab through. Stops at the first failure unless continue_on_error is set. Use this to cut round trips: fill, fill, click, wait.',
+    description:
+      'Run several tools in order in one call, passing the same tab through. Stops at the first failure unless continue_on_error is set. Use this to cut round trips: fill, fill, click, wait. ' +
+      `Results are capped at ${MAX_BATCH_CHARS} characters across all steps: past that the batch stops early and reports truncated, so pass max_chars to reading steps or split a read-heavy sequence across calls.`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -38,7 +45,7 @@ export const tools = [
       },
       required: ['steps']
     },
-    annotations: { title: 'Batch', readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true }
+    annotations: write('Batch', { destructive: true })
   }
 ];
 
@@ -102,6 +109,10 @@ function commonTab(tabs) {
   return best;
 }
 
+// Charged against the batch budget. JSON.stringify is what index.js serialises
+// the response with, so it is the right ruler for what the caller will receive.
+const resultChars = (entry) => JSON.stringify(entry ?? null).length;
+
 function withoutTab(value) {
   if (!value || typeof value !== 'object' || !('tab' in value)) return value;
   const { tab, ...rest } = value;
@@ -128,10 +139,13 @@ export const handlers = {
     };
   },
 
-  batch: async (args) => {
+  batch: async (args, extra) => {
     const steps = args.steps || [];
     const all = lookup();
     const ran = [];
+    let budgetLeft = MAX_BATCH_CHARS;
+    let truncated = false;
+    let note = null;
 
     // bindRegistry runs when registry.js is imported. Importing this module on
     // its own leaves batch with no peers, and "Unknown tool: click" is a
@@ -144,6 +158,12 @@ export const handlers = {
     }
 
     for (const [index, step] of steps.entries()) {
+      // A cancelled caller is not going to read the rest, and every remaining
+      // step would spawn another osascript process on the user's machine.
+      if (extra?.signal?.aborted) {
+        note = `Cancelled after ${ran.length} of ${steps.length} steps. Whatever the steps already run did to the page stands.`;
+        break;
+      }
       const handler = all[step.tool];
       if (!handler) {
         ran.push({ index, tool: step.tool, ok: false, error: `Unknown tool: ${step.tool}` });
@@ -152,13 +172,29 @@ export const handlers = {
       }
       const stepArgs = { ...(args.tab_id ? { tab_id: args.tab_id } : {}), ...(step.args || {}) };
       try {
-        const value = await handler(stepArgs);
+        // extra carries the client's AbortSignal, so a cancelled batch stops
+        // inside the step it is on rather than only between steps.
+        const value = await handler(stepArgs, extra);
         const failed = value && value.ok === false;
         ran.push({ index, tool: step.tool, ok: !failed, value });
         if (failed && !args.continue_on_error) break;
       } catch (error) {
         ran.push({ index, tool: step.tool, ok: false, error: error.message });
         if (!args.continue_on_error) break;
+      }
+
+      // Charged after the step, so the step that used up the budget still
+      // reports its result: it already ran, and dropping the value would hide
+      // a side effect the caller has to know about.
+      budgetLeft -= resultChars(ran[ran.length - 1]);
+      if (budgetLeft <= 0 && index < steps.length - 1) {
+        truncated = true;
+        note =
+          `Stopped after ${ran.length} of ${steps.length} steps: the results reached this batch's ` +
+          `${MAX_BATCH_CHARS} character budget, and a longer response would be clipped by the client ` +
+          'mid-JSON. Run the remaining steps as a second batch, and pass max_chars to the reading ' +
+          'steps (get_page_content, get_html) or a smaller limit to query_elements and get_links.';
+        break;
       }
     }
 
@@ -179,6 +215,8 @@ export const handlers = {
       ran: results.length,
       total: steps.length,
       ok: results.every((r) => r.ok),
+      ...(truncated ? { truncated: true } : {}),
+      ...(note ? { note } : {}),
       ...(batchTab ? { tab: batchTab } : {}),
       results
     };

@@ -4,8 +4,8 @@ export const tools = [
   {
     name: 'list_spaces',
     description: 'List Arc spaces in the front window, with tab counts and which is active. Tabs pinned to the top of the sidebar (location topApp) belong to no space, so the reported tabsInSpaces plus topAppCount is what reconciles with totalTabs. Counts cover the front window only, while list_tabs covers every window.',
-    inputSchema: { type: 'object', properties: {} },
-    annotations: read('List Spaces')
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: read('List Spaces', { openWorld: false })
   },
   {
     name: 'focus_space',
@@ -15,7 +15,7 @@ export const tools = [
       properties: { space: { type: 'string', description: 'Space id or title from list_spaces' } },
       required: ['space']
     },
-    annotations: write('Focus Space')
+    annotations: write('Focus Space', { idempotent: true, openWorld: false })
   }
 ];
 

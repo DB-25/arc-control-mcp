@@ -1,0 +1,20 @@
+version: 2
+
+# Monthly, not weekly. One runtime dependency and four actions do not generate
+# enough real news to be worth a PR every week.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      # Conventional Commits, so these PRs read like every other commit here.
+      prefix: ci
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: chore
+      prefix-development: chore

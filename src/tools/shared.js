@@ -18,8 +18,49 @@ export const VERBOSE = {
   default: false
 };
 
-export const read = (title) => ({ title, readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
-export const write = (title, destructive = false) => ({ title, readOnlyHint: false, destructiveHint: destructive, idempotentHint: false, openWorldHint: false });
+/**
+ * MCP tool annotations. The spec's defaults are counterintuitive:
+ * destructiveHint and openWorldHint both default to true, and destructiveHint
+ * and idempotentHint are only meaningful when readOnlyHint is false. Every
+ * hint is therefore stated rather than left to a client's inference.
+ *
+ * openWorld defaults to true because almost every tool here touches an
+ * arbitrary web page, and untrusted external content is precisely the open
+ * world the flag exists to describe. Pass openWorld: false only for tools that
+ * read Arc's own tab and space bookkeeping.
+ */
+export const read = (title, options = {}) => {
+  // Same guard as write(): a stale positional argument should crash at import
+  // rather than quietly resolve to a default nobody intended.
+  if (typeof options !== 'object' || options === null) {
+    throw new Error(`read("${title}") takes an options object. Pass { openWorld: false } instead of a boolean.`);
+  }
+  const { openWorld = true } = options;
+  return {
+    title,
+    readOnlyHint: true,
+    destructiveHint: false,
+    idempotentHint: true,
+    openWorldHint: openWorld
+  };
+};
+
+export const write = (title, options = {}) => {
+  // This used to take a positional boolean. Mislabelling a destructive tool as
+  // safe is the worst outcome here, so a stale call site must crash at import
+  // rather than quietly resolve to destructive: false.
+  if (typeof options !== 'object' || options === null) {
+    throw new Error(`write("${title}") takes an options object. Pass { destructive: true } instead of a boolean.`);
+  }
+  const { destructive = false, idempotent = false, openWorld = true } = options;
+  return {
+    title,
+    readOnlyHint: false,
+    destructiveHint: destructive,
+    idempotentHint: idempotent,
+    openWorldHint: openWorld
+  };
+};
 
 /** Adds the agent's implicit target and ownership info to every script. */
 export function scoped(args = {}) {
@@ -52,11 +93,12 @@ export function unwrapPage(out) {
 }
 
 /** Resolve a tab, run DOM code in it, and return the value plus tab info. */
-export function runPage(args, body) {
+export function runPage(args, body, timeoutMs) {
   return runJxa(
     `const tab = target();
      JSON.stringify({ result: evalJs(tab, P.page_code), tab: describe(tab) });`,
-    scoped({ ...args, page_code: pageScript(body) })
+    scoped({ ...args, page_code: pageScript(body) }),
+    timeoutMs
   ).then(unwrapPage);
 }
 

@@ -1,0 +1,141 @@
+name: Release
+
+# A tag push and a manual run both land here, and neither publishes on its own:
+# the job is bound to the `release` environment, so it waits for that
+# environment's approval before any step runs. A stray tag cannot ship.
+#
+# ONE-TIME MANUAL SETUP, done once and then never again:
+#
+# 1. The FIRST npm publish has to be by hand. npm cannot bind a trusted
+#    publisher to a package that does not exist yet, so there is nothing to
+#    configure on npmjs.com until the first version is up:
+#
+#      npm login
+#      npm ci && npm test
+#      npm publish              # from a clean checkout of the tag
+#
+# 2. Then, on npmjs.com > arc-control-mcp > Settings > Trusted publisher, add a
+#    GitHub Actions publisher with exactly these values. All four are matched
+#    against the OIDC token, so any mismatch is refused with no useful message:
+#
+#      Organization or user   DB-25
+#      Repository             arc-control-mcp
+#      Workflow filename      release.yml     <- this file. Renaming it breaks publishing.
+#      Environment            release         <- must equal `environment:` below.
+#
+# 3. Create the `release` environment under the repository's
+#    Settings > Environments, with a required reviewer.
+#
+# 4. The first MCP Registry publish is also manual, once, because
+#    `mcp-publisher login github` needs a browser:
+#
+#      mcp-publisher login github && mcp-publisher publish
+#
+# After that there is no npm token anywhere. npm trusts this repository, this
+# filename and this environment, and nothing else.
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: write # create the GitHub release
+      id-token: write # mint the OIDC token npm and mcp-publisher exchange
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm >= 11.5.1, and the npm bundled with a Node
+      # release is whatever shipped with it, so the version is settled here
+      # rather than left to the runner image. Too old an npm does not say
+      # "upgrade": it goes looking for a token it will never find and fails with
+      # ENEEDAUTH, which reads like a missing secret.
+      - name: Install an npm that can do OIDC
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      # package.json declares os: darwin, which is true of the server but makes
+      # npm refuse to install on a Linux runner. --force overrides just that
+      # platform check; the tests themselves never touch Arc.
+      - name: Install
+        run: npm ci --force
+
+      - name: Test
+        run: npm test
+
+      # The version is written in three places, so drift is the default outcome
+      # unless something checks. A stale server.json version leaves the registry
+      # advertising a version npm is not serving, and nothing else notices.
+      - name: Check the tag, package.json and server.json all agree
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF_TYPE" != tag ]; then
+            echo "::error::Run this on a version tag, not a branch. Pick the tag in the Run workflow dropdown."
+            exit 1
+          fi
+          tag="${GITHUB_REF_NAME#v}"
+          pkg="$(node -p 'require("./package.json").version')"
+          srv="$(node -p 'require("./server.json").version')"
+          srv_pkg="$(node -p 'require("./server.json").packages[0].version')"
+          mcp_name="$(node -p 'require("./package.json").mcpName')"
+          srv_name="$(node -p 'require("./server.json").name')"
+          echo "tag=$tag package.json=$pkg server.json=$srv server.json/packages[0]=$srv_pkg"
+          mismatch=""
+          [ "$pkg" = "$tag" ] || mismatch="$mismatch package.json=$pkg"
+          [ "$srv" = "$tag" ] || mismatch="$mismatch server.json=$srv"
+          [ "$srv_pkg" = "$tag" ] || mismatch="$mismatch server.json/packages[0]=$srv_pkg"
+          if [ -n "$mismatch" ]; then
+            echo "::error::Version mismatch against tag $tag:$mismatch. Bump all three together."
+            exit 1
+          fi
+          if [ "$mcp_name" != "$srv_name" ]; then
+            echo "::error::package.json mcpName ($mcp_name) must equal server.json name ($srv_name), or the registry cannot verify npm ownership."
+            exit 1
+          fi
+
+      # No NODE_AUTH_TOKEN: the OIDC token minted by id-token: write is the
+      # credential. --provenance is passed explicitly because npm documents it
+      # as automatic under trusted publishing and there are reports of it being
+      # skipped without the flag; passing it when it is already on is harmless.
+      - name: Publish to npm
+        run: npm publish --provenance
+
+      # Fetched from releases/latest rather than pinned: mcp-publisher talks to
+      # a preview registry, and an old client is the more likely failure.
+      - name: Install mcp-publisher
+        run: |
+          set -euo pipefail
+          os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          arch="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${os}_${arch}.tar.gz" | tar xz mcp-publisher
+          ./mcp-publisher --version || true
+
+      - name: Publish to the MCP Registry
+        run: |
+          set -euo pipefail
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          notes="$(printf 'macOS only. Install with \`npx -y arc-control-mcp@%s\`.\n\nWhat changed: https://github.com/%s/blob/%s/CHANGELOG.md\n' "$version" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME")"
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes "$notes"

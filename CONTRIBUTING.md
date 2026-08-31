@@ -15,8 +15,8 @@ npm install
 npm test
 ```
 
-No build step. Node 18 or newer, ES modules throughout, one runtime dependency
-(`@modelcontextprotocol/sdk`).
+No build step. Node 20 or newer (`.nvmrc` pins the major this targets), ES
+modules throughout, one runtime dependency (`@modelcontextprotocol/sdk`).
 
 ## Tests
 
@@ -160,3 +160,21 @@ known-limitations list, and a PR that adds it there is welcome on its own.
 
 Please read [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Security issues go to the
 address in [SECURITY.md](SECURITY.md), not into a public issue.
+
+## Releasing
+
+Maintainer only, and mostly a note about one trap: the version is written in
+**three** places, and `.github/workflows/release.yml` fails the build unless all
+three match the git tag.
+
+1. `package.json` `version`
+2. `server.json` `version`
+3. `server.json` `packages[0].version`
+
+Move the CHANGELOG's `Unreleased` entries under the new version heading, tag
+`v<version>`, and push the tag. The release workflow runs the tests, checks the
+three versions against the tag, publishes to npm using OIDC trusted publishing
+(so no npm token is stored anywhere), publishes to the MCP Registry, and creates
+the GitHub release. It is gated on the `release` environment, so it waits for an
+approval rather than firing on any tag push. The one-time setup that cannot be
+automated is described in a comment at the top of that workflow.

@@ -1,0 +1,46 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.DB-25/arc-control-mcp",
+  "title": "Arc Control (macOS)",
+  "description": "macOS-only MCP server for the Arc browser: tabs, navigation, page reading, DOM, scripting",
+  "version": "0.3.0",
+  "websiteUrl": "https://github.com/DB-25/arc-control-mcp",
+  "repository": {
+    "url": "https://github.com/DB-25/arc-control-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "arc-control-mcp",
+      "version": "0.3.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "ARC_MCP_LABEL",
+          "description": "Names this agent's tab ownership. Two agents with different labels never see each other's owned tabs. Defaults to \"default\".",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "default"
+        },
+        {
+          "name": "ARC_MCP_SPACE",
+          "description": "The Arc space new tabs open into, when a space with that name exists. Arc will not let a script create a space, so make it by hand. Defaults to \"Agent\".",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "Agent"
+        },
+        {
+          "name": "ARC_MCP_STATE_DIR",
+          "description": "Directory where per-session tab ownership is recorded, so a restarted agent can clean up the tabs its previous run left behind. Defaults to ~/Library/Application Support/arc-control-mcp.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "filepath"
+        }
+      ]
+    }
+  ]
+}

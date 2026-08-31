@@ -25,13 +25,13 @@ export const tools = [
         window_id: { type: 'string', description: 'Restrict to one window id' }
       }
     },
-    annotations: read('List Tabs')
+    annotations: read('List Tabs', { openWorld: false })
   },
   {
     name: 'get_current_tab',
     description: "Get the tab a call with no tab_id would act on: this agent's current tab, or the active tab if it has none.",
     inputSchema: { type: 'object', properties: { tab_id: TAB_ID } },
-    annotations: read('Get Current Tab')
+    annotations: read('Get Current Tab', { openWorld: false })
   },
   {
     name: 'switch_to_tab',
@@ -44,13 +44,14 @@ export const tools = [
       },
       required: ['tab_id']
     },
-    annotations: write('Switch To Tab')
+    annotations: write('Switch To Tab', { idempotent: true, openWorld: false })
   },
   {
     name: 'close_tab',
-    description: 'Close a tab.',
+    description:
+      "Close one tab. With no tab_id this closes whatever a bare call resolves to, which is this agent's current tab or, if it has none yet, the tab the user is actively looking at. Pass an explicit tab_id from list_tabs unless you are certain. Closing cannot be undone and tab ids are not reused. To clean up after yourself, prefer close_own_tabs.",
     inputSchema: { type: 'object', properties: { tab_id: TAB_ID } },
-    annotations: write('Close Tab', true)
+    annotations: write('Close Tab', { destructive: true, openWorld: false })
   },
   {
     name: 'close_own_tabs',
@@ -65,13 +66,13 @@ export const tools = [
         }
       }
     },
-    annotations: write('Close Own Tabs', true)
+    annotations: write('Close Own Tabs', { destructive: true, openWorld: false })
   },
   {
     name: 'arc_status',
     description: 'Report Arc state: which tabs this agent owns, whether the agent space exists, what a call with no tab_id resolves to, and how many tabs a previous run of this label left behind.',
-    inputSchema: { type: 'object', properties: {} },
-    annotations: read('Arc Status')
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    annotations: read('Arc Status', { openWorld: false })
   }
 ];
 
