@@ -1,5 +1,6 @@
 import { ArcError } from '../jxa.js';
-import { TAB_ID, read, write, runTab, runPage, sleep, state } from './shared.js';
+import { z, TAB_ID, timeoutMs, MAX_CALLER_TIMEOUT_MS } from './schema.js';
+import { read, write, runTab, runPage, sleep, state } from './shared.js';
 
 const POLL_MS = 250;
 const LOAD_TIMEOUT_MS = 15000;
@@ -9,9 +10,9 @@ const LOAD_TIMEOUT_MS = 15000;
 // what the page was doing. So open_url's launch budget plus the longest load
 // wait it can be asked for has to stay clearly inside 60s. Progress
 // notifications do not help: a client MAY reset its clock on progress and
-// mostly does not, so the budget itself is the fix.
+// mostly does not, so the budget itself is the fix. The ceiling on that wait is
+// MAX_CALLER_TIMEOUT_MS, which schema.js holds for every waiting tool.
 const OPEN_TIMEOUT_MS = 25000;
-const MAX_CALLER_TIMEOUT_MS = 30000;
 // A back, forward or reload commits in well under a second. Giving the move
 // check a short budget of its own means "there is no entry that way" answers
 // quickly instead of burning the whole load timeout on a tab that never moved.
@@ -25,14 +26,10 @@ const loadTimeout = (args) => Math.min(args.timeout_ms ?? LOAD_TIMEOUT_MS, MAX_C
 // caller asked to wait in total.
 const moveTimeout = (args) => Math.min(loadTimeout(args), MOVE_TIMEOUT_MS);
 
-const TIMEOUT_NOTE =
-  `Capped at ${MAX_CALLER_TIMEOUT_MS}ms, because a longer call is killed by the client before it can answer. ` +
-  'To wait longer, call wait_for_load again: repeated short waits each hand back a real readyState and url, which one long wait does not.';
-
 // Every tool here navigates, so they all take the same waiting controls.
 const WAIT_OPTIONS = {
-  wait_until_loaded: { type: 'boolean', description: 'Wait for the page to finish loading before returning', default: true },
-  timeout_ms: { type: 'number', description: `How long to wait for loading. ${TIMEOUT_NOTE}`, default: LOAD_TIMEOUT_MS, maximum: MAX_CALLER_TIMEOUT_MS }
+  wait_until_loaded: z.boolean().default(true).describe('Wait for the page to finish loading before returning'),
+  timeout_ms: timeoutMs(LOAD_TIMEOUT_MS, 'How long to wait for loading.')
 };
 
 /**
@@ -58,31 +55,27 @@ export const tools = [
   {
     name: 'open_url',
     description: 'Open a URL in Arc. Launches Arc if needed. New tabs go into the agent space when one exists, otherwise the main window. Arc auto-selects new tabs, so the previous selection is put back unless you pass activate.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        url: { type: 'string', description: 'URL to open' },
-        new_tab: { type: 'boolean', description: 'Open a new tab. Set false to navigate an existing tab instead.', default: true },
-        tab_id: { ...TAB_ID, description: 'With new_tab false, the tab to navigate' },
-        space: { type: 'string', description: 'Space id or title to open into, overriding the agent space' },
-        little_arc: { type: 'boolean', description: 'Open a Little Arc window. Fire and forget: Arc does not expose these afterwards.', default: false },
-        activate: { type: 'boolean', description: 'Bring Arc to the front and leave the new tab selected', default: false },
-        ...WAIT_OPTIONS
-      },
-      required: ['url']
-    },
+    input: z.object({
+      url: z.string().describe('URL to open'),
+      new_tab: z.boolean().default(true).describe('Open a new tab. Set false to navigate an existing tab instead.'),
+      tab_id: TAB_ID.describe('With new_tab false, the tab to navigate. Required in that mode unless this agent already has a tab of its own, since navigating the tab the user is looking at is refused.').optional(),
+      space: z.string().describe('Space id or title to open into, overriding the agent space').optional(),
+      little_arc: z.boolean().default(false).describe('Open a Little Arc window. Fire and forget: Arc does not expose these afterwards.'),
+      activate: z.boolean().default(false).describe('Bring Arc to the front and leave the new tab selected'),
+      ...WAIT_OPTIONS
+    }),
     annotations: write('Open URL')
   },
   {
     name: 'go_back',
     description: "Navigate a tab back in history. Goes through the page, so it works on a background tab, which Arc's own back command does not, and the result is checked against the tab url rather than assumed.",
-    inputSchema: { type: 'object', properties: { tab_id: TAB_ID, ...WAIT_OPTIONS } },
+    input: z.object({ tab_id: TAB_ID.optional(), ...WAIT_OPTIONS }),
     annotations: write('Go Back')
   },
   {
     name: 'go_forward',
     description: 'Navigate a tab forward in history. Goes through the page and confirms the tab really moved before reporting success.',
-    inputSchema: { type: 'object', properties: { tab_id: TAB_ID, ...WAIT_OPTIONS } },
+    input: z.object({ tab_id: TAB_ID.optional(), ...WAIT_OPTIONS }),
     annotations: write('Go Forward')
   },
   {
@@ -91,20 +84,17 @@ export const tools = [
       'Reload a tab, then confirm the document really was replaced rather than assume it. Works on a background tab. ' +
       'Takes wait_until_loaded and timeout_ms like the other navigating tools, and returns from, to and the tab. ' +
       'Fails with ok false when the tab is still showing the document that was there before, which is what a slow server or a page holding on to unload looks like from outside.',
-    inputSchema: { type: 'object', properties: { tab_id: TAB_ID, ...WAIT_OPTIONS } },
+    input: z.object({ tab_id: TAB_ID.optional(), ...WAIT_OPTIONS }),
     annotations: write('Reload Tab', { idempotent: true })
   },
   {
     name: 'wait_for_load',
     description: 'Poll until a tab has finished loading and the document is ready. Use after an action that triggers navigation.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tab_id: TAB_ID,
-        timeout_ms: { type: 'number', description: `Give up after this long. ${TIMEOUT_NOTE}`, default: LOAD_TIMEOUT_MS, maximum: MAX_CALLER_TIMEOUT_MS },
-        url_contains: { type: 'string', description: 'Also wait until the url contains this substring' }
-      }
-    },
+    input: z.object({
+      tab_id: TAB_ID.optional(),
+      timeout_ms: timeoutMs(LOAD_TIMEOUT_MS, 'Give up after this long.'),
+      url_contains: z.string().describe('Also wait until the url contains this substring').optional()
+    }),
     annotations: read('Wait For Load')
   }
 ];

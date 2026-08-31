@@ -1,4 +1,5 @@
-import { TAB_ID, write, runPage } from './shared.js';
+import { z, TAB_ID } from './schema.js';
+import { write, runPage } from './shared.js';
 import { ArcError } from '../jxa.js';
 
 // Cumulative budget for everything batch reports back. Individual read tools cap
@@ -10,14 +11,10 @@ export const tools = [
   {
     name: 'execute_javascript',
     description: 'Run JavaScript in a tab and return the result. A bare expression, or a statement body that uses return, both work. The helper library is available as A (A.all, A.one, A.click, A.setValue, A.describe, A.visible).',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        code: { type: 'string', description: 'JavaScript to evaluate. An expression returns its value; a statement body returns whatever it returns, or null.' },
-        tab_id: TAB_ID
-      },
-      required: ['code']
-    },
+    input: z.object({
+      code: z.string().describe('JavaScript to evaluate. An expression returns its value; a statement body returns whatever it returns, or null.'),
+      tab_id: TAB_ID.optional()
+    }),
     annotations: write('Execute JavaScript', { destructive: true })
   },
   {
@@ -25,26 +22,22 @@ export const tools = [
     description:
       'Run several tools in order in one call, passing the same tab through. Stops at the first failure unless continue_on_error is set. Use this to cut round trips: fill, fill, click, wait. ' +
       `Results are capped at ${MAX_BATCH_CHARS} characters across all steps: past that the batch stops early and reports truncated, so pass max_chars to reading steps or split a read-heavy sequence across calls.`,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        steps: {
-          type: 'array',
-          description: 'Steps to run in order',
-          items: {
-            type: 'object',
-            properties: {
-              tool: { type: 'string', description: 'Name of any other tool in this server' },
-              args: { type: 'object', description: 'Arguments for that tool' }
-            },
-            required: ['tool']
-          }
-        },
-        tab_id: { ...TAB_ID, description: 'Applied to every step that does not set its own' },
-        continue_on_error: { type: 'boolean', description: 'Keep going after a failing step', default: false }
-      },
-      required: ['steps']
-    },
+    input: z.object({
+      steps: z
+        .array(
+          z.object({
+            tool: z.string().describe('Name of any other tool in this server'),
+            // A bag destined for another tool, so it has to survive validation
+            // whole: z.record keeps every key, where a z.object would strip the
+            // ones it does not know. The peer's own schema checks it later,
+            // because batch calls peers through the wrapped registry handlers.
+            args: z.record(z.string(), z.unknown()).optional().describe('Arguments for that tool')
+          })
+        )
+        .describe('Steps to run in order'),
+      tab_id: TAB_ID.optional().describe('Applied to every step that does not set its own'),
+      continue_on_error: z.boolean().default(false).describe('Keep going after a failing step')
+    }),
     annotations: write('Batch', { destructive: true })
   }
 ];

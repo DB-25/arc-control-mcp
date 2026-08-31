@@ -1,0 +1,907 @@
+[
+  {
+    "name": "list_tabs",
+    "title": "List Tabs",
+    "description": "List Arc tabs. Rows are flagged 'mine' for tabs this agent opened and 'isActive' for the tab the user is on. Defaults to every tab; pass scope 'own' to narrow.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "default": "all",
+          "description": "'all' (default) or only this agent's tabs",
+          "type": "string",
+          "enum": [
+            "all",
+            "own"
+          ]
+        },
+        "query": {
+          "type": "string",
+          "description": "Case-insensitive substring matched against title and url"
+        },
+        "space": {
+          "type": "string",
+          "description": "Only tabs in this space title"
+        },
+        "window_id": {
+          "type": "string",
+          "description": "Restrict to one window id"
+        }
+      }
+    },
+    "annotations": {
+      "title": "List Tabs",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "get_current_tab",
+    "title": "Get Current Tab",
+    "description": "Get the tab a call with no tab_id would act on: this agent's current tab, or the active tab if it has none.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        }
+      }
+    },
+    "annotations": {
+      "title": "Get Current Tab",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "switch_to_tab",
+    "title": "Switch To Tab",
+    "description": "Make a tab the active tab in its window. Changes what the user sees, so prefer reading a tab by id when you only need its content.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs"
+        },
+        "activate": {
+          "default": false,
+          "description": "Also bring Arc to the front",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "tab_id"
+      ]
+    },
+    "annotations": {
+      "title": "Switch To Tab",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "close_tab",
+    "title": "Close Tab",
+    "description": "Close one tab. With no tab_id this closes this agent's own current tab, and is refused outright if the agent has not opened one: it will never close the tab the user is looking at. Pass an explicit tab_id from list_tabs to close any other tab. Closing cannot be undone and tab ids are not reused. To clean up after yourself, prefer close_own_tabs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        }
+      }
+    },
+    "annotations": {
+      "title": "Close Tab",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "close_own_tabs",
+    "title": "Close Own Tabs",
+    "description": "Close every tab this agent opened, leaving the user's tabs alone. Tabs leaked by a previous run of this label are left alone too unless include_stale is set.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "include_stale": {
+          "default": false,
+          "description": "Also close tabs left behind by dead sessions of this label (see staleTabCount in arc_status). Never touches a live agent's tabs.",
+          "type": "boolean"
+        }
+      }
+    },
+    "annotations": {
+      "title": "Close Own Tabs",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "arc_status",
+    "title": "Arc Status",
+    "description": "Report Arc state: which tabs this agent owns, whether the agent space exists, what a call with no tab_id resolves to, and how many tabs a previous run of this label left behind.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "Arc Status",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "open_url",
+    "title": "Open URL",
+    "description": "Open a URL in Arc. Launches Arc if needed. New tabs go into the agent space when one exists, otherwise the main window. Arc auto-selects new tabs, so the previous selection is put back unless you pass activate.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "description": "URL to open"
+        },
+        "new_tab": {
+          "default": true,
+          "description": "Open a new tab. Set false to navigate an existing tab instead.",
+          "type": "boolean"
+        },
+        "tab_id": {
+          "type": "string",
+          "description": "With new_tab false, the tab to navigate. Required in that mode unless this agent already has a tab of its own, since navigating the tab the user is looking at is refused."
+        },
+        "space": {
+          "type": "string",
+          "description": "Space id or title to open into, overriding the agent space"
+        },
+        "little_arc": {
+          "default": false,
+          "description": "Open a Little Arc window. Fire and forget: Arc does not expose these afterwards.",
+          "type": "boolean"
+        },
+        "activate": {
+          "default": false,
+          "description": "Bring Arc to the front and leave the new tab selected",
+          "type": "boolean"
+        },
+        "wait_until_loaded": {
+          "default": true,
+          "description": "Wait for the page to finish loading before returning",
+          "type": "boolean"
+        },
+        "timeout_ms": {
+          "default": 15000,
+          "description": "How long to wait for loading. Capped at 30000ms so the call cannot outlive a client's request timeout. To wait longer, call this again.",
+          "type": "number",
+          "maximum": 30000
+        }
+      },
+      "required": [
+        "url"
+      ]
+    },
+    "annotations": {
+      "title": "Open URL",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "go_back",
+    "title": "Go Back",
+    "description": "Navigate a tab back in history. Goes through the page, so it works on a background tab, which Arc's own back command does not, and the result is checked against the tab url rather than assumed.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "wait_until_loaded": {
+          "default": true,
+          "description": "Wait for the page to finish loading before returning",
+          "type": "boolean"
+        },
+        "timeout_ms": {
+          "default": 15000,
+          "description": "How long to wait for loading. Capped at 30000ms so the call cannot outlive a client's request timeout. To wait longer, call this again.",
+          "type": "number",
+          "maximum": 30000
+        }
+      }
+    },
+    "annotations": {
+      "title": "Go Back",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "go_forward",
+    "title": "Go Forward",
+    "description": "Navigate a tab forward in history. Goes through the page and confirms the tab really moved before reporting success.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "wait_until_loaded": {
+          "default": true,
+          "description": "Wait for the page to finish loading before returning",
+          "type": "boolean"
+        },
+        "timeout_ms": {
+          "default": 15000,
+          "description": "How long to wait for loading. Capped at 30000ms so the call cannot outlive a client's request timeout. To wait longer, call this again.",
+          "type": "number",
+          "maximum": 30000
+        }
+      }
+    },
+    "annotations": {
+      "title": "Go Forward",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "reload_tab",
+    "title": "Reload Tab",
+    "description": "Reload a tab, then confirm the document really was replaced rather than assume it. Works on a background tab. Takes wait_until_loaded and timeout_ms like the other navigating tools, and returns from, to and the tab. Fails with ok false when the tab is still showing the document that was there before, which is what a slow server or a page holding on to unload looks like from outside.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "wait_until_loaded": {
+          "default": true,
+          "description": "Wait for the page to finish loading before returning",
+          "type": "boolean"
+        },
+        "timeout_ms": {
+          "default": 15000,
+          "description": "How long to wait for loading. Capped at 30000ms so the call cannot outlive a client's request timeout. To wait longer, call this again.",
+          "type": "number",
+          "maximum": 30000
+        }
+      }
+    },
+    "annotations": {
+      "title": "Reload Tab",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "wait_for_load",
+    "title": "Wait For Load",
+    "description": "Poll until a tab has finished loading and the document is ready. Use after an action that triggers navigation.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "timeout_ms": {
+          "default": 15000,
+          "description": "Give up after this long. Capped at 30000ms so the call cannot outlive a client's request timeout. To wait longer, call this again.",
+          "type": "number",
+          "maximum": 30000
+        },
+        "url_contains": {
+          "type": "string",
+          "description": "Also wait until the url contains this substring"
+        }
+      }
+    },
+    "annotations": {
+      "title": "Wait For Load",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "get_page_content",
+    "title": "Get Page Content",
+    "description": "Get the visible text of a page, or of every element matching a selector joined with blank lines. Always reports \"matched\", so a partial answer is never silent. Nested matches repeat their text, so prefer a leaf-ish selector.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "selector": {
+          "type": "string",
+          "description": "CSS selector, or \"text=Some label\" to match on visible text (case-insensitive substring, exact matches ranked first)"
+        },
+        "first_only": {
+          "default": false,
+          "description": "Return only the first match instead of joining all of them",
+          "type": "boolean"
+        },
+        "max_chars": {
+          "default": 20000,
+          "description": "Truncate the joined text at this length",
+          "type": "number"
+        }
+      }
+    },
+    "annotations": {
+      "title": "Get Page Content",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "get_html",
+    "title": "Get HTML",
+    "description": "Get the HTML of a page or element. Use when you need markup, attributes or structure rather than text. Returns one element only: it reports how many matched and takes nth to pick a different one.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "selector": {
+          "type": "string",
+          "description": "CSS selector, or \"text=Some label\" to match on visible text (case-insensitive substring, exact matches ranked first)"
+        },
+        "nth": {
+          "default": 0,
+          "description": "Which match to return when several exist, 0-based",
+          "type": "number"
+        },
+        "outer": {
+          "default": true,
+          "description": "Include the element tag itself",
+          "type": "boolean"
+        },
+        "max_chars": {
+          "default": 20000,
+          "description": "Truncate at this length",
+          "type": "number"
+        }
+      }
+    },
+    "annotations": {
+      "title": "Get HTML",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "query_elements",
+    "title": "Query Elements",
+    "description": "Find elements and return structured details: text, value, href, visibility, disabled state and attributes. The main way to see what is on a page before acting on it. \"text=\" matching is substring, with exact matches ranked first; pass exact to require an exact match.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "selector": {
+          "type": "string",
+          "description": "CSS selector, or \"text=Some label\" to match on visible text (case-insensitive substring, exact matches ranked first)"
+        },
+        "limit": {
+          "default": 40,
+          "description": "Maximum elements to return",
+          "type": "number"
+        },
+        "visible_only": {
+          "default": false,
+          "description": "Skip hidden elements",
+          "type": "boolean"
+        },
+        "exact": {
+          "default": false,
+          "description": "For a \"text=\" selector, match the whole text rather than a substring",
+          "type": "boolean"
+        },
+        "verbose": {
+          "default": false,
+          "description": "Include the bulky element rect and longer attribute values",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "selector"
+      ]
+    },
+    "annotations": {
+      "title": "Query Elements",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "get_links",
+    "title": "Get Links",
+    "description": "List links on the page with their text and resolved href. Pass unique to collapse repeated href and text pairs, which navigation and footers produce in bulk.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "query": {
+          "description": "Case-insensitive substring matched against link text and href",
+          "type": "string"
+        },
+        "unique": {
+          "default": false,
+          "description": "Collapse links with an identical href and text, reporting how many were dropped",
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 100,
+          "description": "Maximum links to return",
+          "type": "number"
+        }
+      }
+    },
+    "annotations": {
+      "title": "Get Links",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "get_page_info",
+    "title": "Get Page Info",
+    "description": "Page overview: title, url, ready state, meta description, headings, form and frame counts. Cheap orientation before deciding what to do.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        }
+      }
+    },
+    "annotations": {
+      "title": "Get Page Info",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "click",
+    "title": "Click",
+    "description": "Click an element. Accepts a CSS selector or \"text=Label\". Scrolls it into view and dispatches a real pointer sequence, so framework handlers fire. \"text=Label\" matches on visible text as a substring, with exact matches ranked first, so a short label also matches longer ones. Check the returned \"matches\" count, and pass exact when it is above 1. Returns urlBefore, the url as it was immediately before the click: the tab snapshot can be taken before a navigation settles, so follow with wait_for_load when the click navigates.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector, or \"text=Some label\" to match on visible text (case-insensitive substring, exact matches ranked first)"
+        },
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "nth": {
+          "default": 0,
+          "description": "Which match to click when several exist, 0-based. Order is exact text matches first, then substring matches, each in DOM order.",
+          "type": "number"
+        },
+        "exact": {
+          "default": false,
+          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label instead of containing it. No effect on CSS selectors.",
+          "type": "boolean"
+        },
+        "verbose": {
+          "default": false,
+          "description": "Include the bulky element rect and longer attribute values",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "selector"
+      ]
+    },
+    "annotations": {
+      "title": "Click",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "fill",
+    "title": "Fill Field",
+    "description": "Set the value of an input, textarea or contenteditable. Uses the native setter and fires input and change, so React and similar frameworks register it. Fails with an error naming the tag when the target cannot be filled: a heading or other non-input, a disabled or readonly field, or a <select> (use select_option for those). \"text=Label\" matches on visible text as a substring, with exact matches ranked first, so a short label also matches longer ones. Check the returned \"matches\" count, and pass exact when it is above 1.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector, or \"text=Some label\" to match on visible text (case-insensitive substring, exact matches ranked first)"
+        },
+        "value": {
+          "type": "string",
+          "description": "Value to set"
+        },
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "nth": {
+          "default": 0,
+          "description": "Which match to fill, 0-based",
+          "type": "number"
+        },
+        "submit": {
+          "default": false,
+          "description": "Press Enter and request form submit afterwards. The tab usually navigates, so follow with wait_for_load: the returned tab snapshot may predate the navigation, and urlBefore reports the url from just before the key press.",
+          "type": "boolean"
+        },
+        "exact": {
+          "default": false,
+          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label instead of containing it. No effect on CSS selectors.",
+          "type": "boolean"
+        },
+        "verbose": {
+          "default": false,
+          "description": "Include the bulky element rect and longer attribute values",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "selector",
+        "value"
+      ]
+    },
+    "annotations": {
+      "title": "Fill Field",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "select_option",
+    "title": "Select Option",
+    "description": "Choose an option in a select element, by exact option value or exact visible label. When nothing matches, the failure lists the options that do exist, so the next call can pick a real one.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector for the <select>. \"text=\" cannot reach a select element, so use a CSS selector here."
+        },
+        "option": {
+          "type": "string",
+          "description": "Option value or visible text, matched exactly after trimming"
+        },
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        }
+      },
+      "required": [
+        "selector",
+        "option"
+      ]
+    },
+    "annotations": {
+      "title": "Select Option",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "press_key",
+    "title": "Press Key",
+    "description": "Dispatch a key press to an element, or to the focused element when no selector is given. Handles named keys (Enter, Escape, Tab, ArrowDown) and single printable characters. Returns only a minimal identity for the element that received the key (tag plus whichever of id, name, type and aria-label exist); use query_elements when you need the full picture.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "Key name, for example Enter, Escape, Tab, ArrowDown, or a single printable character"
+        },
+        "selector": {
+          "type": "string",
+          "description": "CSS selector, or \"text=Some label\" to match on visible text (case-insensitive substring, exact matches ranked first)"
+        },
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "exact": {
+          "default": false,
+          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label instead of containing it. No effect on CSS selectors.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key"
+      ]
+    },
+    "annotations": {
+      "title": "Press Key",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "scroll",
+    "title": "Scroll",
+    "description": "Scroll the page, or scroll an element into view. Page scrolls report scrollY, pageHeight and viewport, so you can tell how much is left.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "selector": {
+          "type": "string",
+          "description": "Scroll this element into view instead of scrolling the page. CSS selector, or \"text=Label\" (substring, exact matches ranked first)."
+        },
+        "direction": {
+          "default": "down",
+          "description": "Page scroll direction",
+          "type": "string",
+          "enum": [
+            "down",
+            "up",
+            "top",
+            "bottom"
+          ]
+        },
+        "amount": {
+          "default": 800,
+          "description": "Pixels to scroll for up and down",
+          "type": "number"
+        },
+        "exact": {
+          "default": false,
+          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label instead of containing it. No effect on CSS selectors.",
+          "type": "boolean"
+        },
+        "verbose": {
+          "default": false,
+          "description": "Include the bulky element rect and longer attribute values",
+          "type": "boolean"
+        }
+      }
+    },
+    "annotations": {
+      "title": "Scroll",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "wait_for_selector",
+    "title": "Wait For Selector",
+    "description": "Poll until an element appears, becomes visible, or disappears. Use after a click that loads content. On timeout it says so explicitly with waitedMs and the last counts, and a broken selector or page error fails straight away instead of burning the whole timeout. The visible state ignores screen-reader clipping (boxes under 2x2 px, inset clip-path), which nothing can actually click.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector, or \"text=Some label\" to match on visible text (case-insensitive substring, exact matches ranked first)"
+        },
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "state": {
+          "default": "visible",
+          "description": "Condition to wait for",
+          "type": "string",
+          "enum": [
+            "present",
+            "visible",
+            "absent"
+          ]
+        },
+        "timeout_ms": {
+          "default": 10000,
+          "description": "Give up after this long. Every call returns the current counts, so repeated short waits tell you more than one long one. Capped at 30000ms so the call cannot outlive a client's request timeout. To wait longer, call this again.",
+          "type": "number",
+          "maximum": 30000
+        },
+        "exact": {
+          "default": false,
+          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label instead of containing it. No effect on CSS selectors.",
+          "type": "boolean"
+        },
+        "verbose": {
+          "default": false,
+          "description": "Include the bulky element rect and longer attribute values",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "selector"
+      ]
+    },
+    "annotations": {
+      "title": "Wait For Selector",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "list_spaces",
+    "title": "List Spaces",
+    "description": "List Arc spaces in the front window, with tab counts and which is active. Tabs pinned to the top of the sidebar (location topApp) belong to no space, so the reported tabsInSpaces plus topAppCount is what reconciles with totalTabs. Counts cover the front window only, while list_tabs covers every window.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "List Spaces",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "focus_space",
+    "title": "Focus Space",
+    "description": "Switch the front Arc window to a space. This changes what the user sees, so it is rarely needed: tabs in an unfocused space are still fully readable and scriptable.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "space": {
+          "type": "string",
+          "description": "Space id or title from list_spaces"
+        }
+      },
+      "required": [
+        "space"
+      ]
+    },
+    "annotations": {
+      "title": "Focus Space",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "execute_javascript",
+    "title": "Execute JavaScript",
+    "description": "Run JavaScript in a tab and return the result. A bare expression, or a statement body that uses return, both work. The helper library is available as A (A.all, A.one, A.click, A.setValue, A.describe, A.visible).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "description": "JavaScript to evaluate. An expression returns its value; a statement body returns whatever it returns, or null."
+        },
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        }
+      },
+      "required": [
+        "code"
+      ]
+    },
+    "annotations": {
+      "title": "Execute JavaScript",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "batch",
+    "title": "Batch",
+    "description": "Run several tools in order in one call, passing the same tab through. Stops at the first failure unless continue_on_error is set. Use this to cut round trips: fill, fill, click, wait. Results are capped at 60000 characters across all steps: past that the batch stops early and reports truncated, so pass max_chars to reading steps or split a read-heavy sequence across calls.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "tool": {
+                "type": "string",
+                "description": "Name of any other tool in this server"
+              },
+              "args": {
+                "description": "Arguments for that tool",
+                "type": "object",
+                "propertyNames": {
+                  "type": "string"
+                },
+                "additionalProperties": {}
+              }
+            },
+            "required": [
+              "tool"
+            ]
+          },
+          "description": "Steps to run in order"
+        },
+        "tab_id": {
+          "description": "Applied to every step that does not set its own",
+          "type": "string"
+        },
+        "continue_on_error": {
+          "default": false,
+          "description": "Keep going after a failing step",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "steps"
+      ]
+    },
+    "annotations": {
+      "title": "Batch",
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  }
+]

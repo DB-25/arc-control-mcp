@@ -2,22 +2,6 @@ import { runJxa, ArcError } from '../jxa.js';
 import * as state from '../state.js';
 import { pageScript } from '../page-lib.js';
 
-export const TAB_ID = {
-  type: 'string',
-  description: "Arc tab id from list_tabs. Omit to use this agent's current tab, falling back to whatever tab is active in Arc."
-};
-
-export const SELECTOR = {
-  type: 'string',
-  description: 'CSS selector, or "text=Some label" to match on visible text (substring, exact matches ranked first)'
-};
-
-export const VERBOSE = {
-  type: 'boolean',
-  description: 'Include the bulky element rect and longer attribute values',
-  default: false
-};
-
 /**
  * MCP tool annotations. The spec's defaults are counterintuitive:
  * destructiveHint and openWorldHint both default to true, and destructiveHint
@@ -64,8 +48,13 @@ export const write = (title, options = {}) => {
 
 /** Adds the agent's implicit target and ownership info to every script. */
 export function scoped(args = {}) {
+  // The registry decides per tool whether falling back to the user's active
+  // tab is acceptable, and passes it down out of band rather than as a
+  // caller-settable argument.
+  const { __allowActiveTab, ...rest } = args;
   return {
-    ...args,
+    ...rest,
+    allow_active_tab: __allowActiveTab === true,
     default_tab_id: state.currentTabId(),
     agent_space: state.AGENT_SPACE,
     owned_ids: state.ownedIds()

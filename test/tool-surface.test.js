@@ -6,7 +6,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { TOOLS } from '../src/registry.js';
-import { TAB_ID, SELECTOR, VERBOSE } from '../src/tools/shared.js';
+import { z, TAB_ID, VERBOSE } from '../src/tools/schema.js';
+import { toJSONSchema } from 'zod';
 
 const SCHEMA_TYPES = ['string', 'boolean', 'number', 'object', 'array'];
 // close_tab's "Close a tab." is the shortest real description, so anything
@@ -57,22 +58,31 @@ describe('shared argument schemas are actually shared', () => {
   });
 
   for (const tool of toolsWith('tab_id')) {
-    it(`${tool.name} uses the shared TAB_ID schema shape`, () => {
+    it(`${tool.name} declares tab_id as a plain described string`, () => {
       const schema = propsOf(tool).tab_id;
       // Some tools narrow the description (open_url, switch_to_tab, batch), so
-      // the shape is what has to match: same keys, same type, never a new
-      // required-ness or enum bolted on locally.
-      assert.deepEqual(Object.keys(schema).sort(), Object.keys(TAB_ID).sort());
-      assert.equal(schema.type, TAB_ID.type);
+      // the shape is what has to match: a string, never an enum or a new
+      // constraint bolted on locally.
+      assert.equal(schema.type, 'string');
       assert.equal(typeof schema.description, 'string');
       assert.ok(schema.description.trim().length > 0);
+      assert.equal(schema.enum, undefined, 'tab_id must not be constrained to a fixed set');
     });
   }
 
+  it('the shared TAB_ID warns that a changing tool will not touch the user tab', () => {
+    // This is the safety rule from target() in jxa.js, and the description is
+    // the only place a model learns it before making the call.
+    const described = toJSONSchema(z.object({ tab_id: TAB_ID }), { io: 'input' }).properties.tab_id
+      .description;
+    assert.match(described, /will not fall back|not fall back/i);
+  });
+
   it('only switch_to_tab makes tab_id mandatory, since every other tool has a fallback', () => {
-    // Omitting tab_id is the normal case: it resolves to this agent's current
-    // tab, then to whatever is active. A new required tab_id would be a
-    // usability regression, not just a schema change.
+    // Omitting tab_id is still the normal case: it resolves to a tab this agent
+    // opened. A read-only tool then falls back to the tab the user is looking
+    // at, and a changing tool is refused. Making tab_id required everywhere
+    // would force a list_tabs round trip before every single call.
     const requiring = toolsWith('tab_id')
       .filter((tool) => (tool.inputSchema.required ?? []).includes('tab_id'))
       .map((tool) => tool.name);
@@ -82,7 +92,7 @@ describe('shared argument schemas are actually shared', () => {
   for (const tool of toolsWith('selector')) {
     it(`${tool.name} documents the "text=" selector form`, () => {
       const schema = propsOf(tool).selector;
-      assert.equal(schema.type, SELECTOR.type);
+      assert.equal(schema.type, 'string');
       assert.ok(
         schema.description.includes('text='),
         `${tool.name} takes a selector but never mentions text=, so a model will only ever send CSS`
@@ -90,9 +100,12 @@ describe('shared argument schemas are actually shared', () => {
     });
   }
 
+  const EXPECTED_VERBOSE = toJSONSchema(z.object({ verbose: VERBOSE }), { io: 'input' }).properties
+    .verbose;
+
   for (const tool of toolsWith('verbose')) {
     it(`${tool.name} uses the shared VERBOSE schema`, () => {
-      assert.deepEqual(propsOf(tool).verbose, VERBOSE);
+      assert.deepEqual(propsOf(tool).verbose, EXPECTED_VERBOSE);
     });
   }
 });

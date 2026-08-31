@@ -49,11 +49,17 @@ function readSessions() {
     return {};
   }
   if (raw && raw.sessions && typeof raw.sessions === 'object') return raw.sessions;
-  // A file written by the flat pre-session format. Its ids belong to a run that
-  // is certainly over, so present them as one dead session rather than losing
-  // track of the tabs it left open.
-  if (raw && Array.isArray(raw.owned)) {
-    return { 'legacy-0': { owned: raw.owned, currentTabId: null, updatedAt: new Date().toISOString() } };
+  // A file written by the flat pre-session format carries no session identity,
+  // so there is no way to tell whether its tabs were left by a run that ended
+  // or are being used right now by a server still on the old code. Treating
+  // them as reapable once marked two of the user's live tabs for closing, so
+  // they are dropped instead. The cost is that genuinely leaked pre-upgrade
+  // tabs need closing by hand, which is far cheaper than closing live ones.
+  if (raw && Array.isArray(raw.owned) && raw.owned.length > 0) {
+    console.error(
+      `arc-control: ignoring ${raw.owned.length} tab id(s) from the pre-session state format, ` +
+        'since they cannot be attributed to a finished run. Close them by hand if they were left behind.'
+    );
   }
   return {};
 }

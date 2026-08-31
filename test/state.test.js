@@ -226,11 +226,15 @@ describe('state.js, one session in this process', () => {
     assert.deepEqual(state.staleIds(), ['LEAKED-2']);
   });
 
-  it('adopts a pre-session flat file as one dead session, so old leaks stay reapable', () => {
+  it('never marks tabs from a pre-session flat file as reapable', () => {
+    // Regression. The flat format carries no session identity, so a file that
+    // looks like a finished run may equally belong to a server still running
+    // the old code. Treating its ids as stale once marked two of the user's
+    // live tabs for reaping, which include_stale would then have closed.
     resetSession();
     writeFileSync(state.stateFile(), JSON.stringify({ owned: ['OLD-1'], currentTabId: 'OLD-1' }));
-    assert.deepEqual(state.staleIds(), ['OLD-1']);
-    assert.deepEqual(state.ownedIds(), []);
+    assert.deepEqual(state.staleIds(), [], 'a flat file must not make anything reapable');
+    assert.deepEqual(state.ownedIds(), [], 'and must never be adopted as owned either');
   });
 
   it('leaves no lock file or temp file behind', () => {

@@ -1,5 +1,6 @@
 import { runJxa } from '../jxa.js';
-import { TAB_ID, read, write, scoped, runTab, state } from './shared.js';
+import { z, TAB_ID } from './schema.js';
+import { read, write, scoped, runTab, state } from './shared.js';
 
 async function snapshotAll() {
   const result = await runJxa(
@@ -16,62 +17,56 @@ export const tools = [
   {
     name: 'list_tabs',
     description: "List Arc tabs. Rows are flagged 'mine' for tabs this agent opened and 'isActive' for the tab the user is on. Defaults to every tab; pass scope 'own' to narrow.",
-    inputSchema: {
-      type: 'object',
-      properties: {
-        scope: { type: 'string', enum: ['all', 'own'], description: "'all' (default) or only this agent's tabs", default: 'all' },
-        query: { type: 'string', description: 'Case-insensitive substring matched against title and url' },
-        space: { type: 'string', description: 'Only tabs in this space title' },
-        window_id: { type: 'string', description: 'Restrict to one window id' }
-      }
-    },
+    input: z.object({
+      scope: z.enum(['all', 'own']).default('all').describe("'all' (default) or only this agent's tabs"),
+      query: z.string().describe('Case-insensitive substring matched against title and url').optional(),
+      space: z.string().describe('Only tabs in this space title').optional(),
+      window_id: z.string().describe('Restrict to one window id').optional()
+    }),
     annotations: read('List Tabs', { openWorld: false })
   },
   {
     name: 'get_current_tab',
     description: "Get the tab a call with no tab_id would act on: this agent's current tab, or the active tab if it has none.",
-    inputSchema: { type: 'object', properties: { tab_id: TAB_ID } },
+    input: z.object({ tab_id: TAB_ID.optional() }),
     annotations: read('Get Current Tab', { openWorld: false })
   },
   {
     name: 'switch_to_tab',
     description: 'Make a tab the active tab in its window. Changes what the user sees, so prefer reading a tab by id when you only need its content.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tab_id: { ...TAB_ID, description: 'Arc tab id from list_tabs' },
-        activate: { type: 'boolean', description: 'Also bring Arc to the front', default: false }
-      },
-      required: ['tab_id']
-    },
+    input: z.object({
+      // Mandatory here, so the fallback wording the shared schema carries would
+      // only be misleading.
+      tab_id: TAB_ID.describe('Arc tab id from list_tabs'),
+      activate: z.boolean().default(false).describe('Also bring Arc to the front')
+    }),
     annotations: write('Switch To Tab', { idempotent: true, openWorld: false })
   },
   {
     name: 'close_tab',
     description:
-      "Close one tab. With no tab_id this closes whatever a bare call resolves to, which is this agent's current tab or, if it has none yet, the tab the user is actively looking at. Pass an explicit tab_id from list_tabs unless you are certain. Closing cannot be undone and tab ids are not reused. To clean up after yourself, prefer close_own_tabs.",
-    inputSchema: { type: 'object', properties: { tab_id: TAB_ID } },
+      "Close one tab. With no tab_id this closes this agent's own current tab, and is refused outright if the agent has not opened one: it will never close the tab the user is looking at. Pass an explicit tab_id from list_tabs to close any other tab. Closing cannot be undone and tab ids are not reused. To clean up after yourself, prefer close_own_tabs.",
+    input: z.object({ tab_id: TAB_ID.optional() }),
     annotations: write('Close Tab', { destructive: true, openWorld: false })
   },
   {
     name: 'close_own_tabs',
     description: "Close every tab this agent opened, leaving the user's tabs alone. Tabs leaked by a previous run of this label are left alone too unless include_stale is set.",
-    inputSchema: {
-      type: 'object',
-      properties: {
-        include_stale: {
-          type: 'boolean',
-          description: 'Also close tabs left behind by dead sessions of this label (see staleTabCount in arc_status). Never touches a live agent\'s tabs.',
-          default: false
-        }
-      }
-    },
+    input: z.object({
+      include_stale: z
+        .boolean()
+        .default(false)
+        .describe(
+          "Also close tabs left behind by dead sessions of this label (see staleTabCount in arc_status). Never touches a live agent's tabs."
+        )
+    }),
     annotations: write('Close Own Tabs', { destructive: true, openWorld: false })
   },
   {
     name: 'arc_status',
     description: 'Report Arc state: which tabs this agent owns, whether the agent space exists, what a call with no tab_id resolves to, and how many tabs a previous run of this label left behind.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    // strictObject, so the generated schema keeps additionalProperties: false.
+    input: z.strictObject({}),
     annotations: read('Arc Status', { openWorld: false })
   }
 ];
@@ -81,6 +76,11 @@ export const handlers = {
     const { tabs, agentSpace } = await snapshotAll();
     const owned = new Set(state.ownedIds());
     const active = tabs.find((t) => t.isActive);
+    // Mirrors target() in jxa.js: the agent's own tab only counts while it is
+    // still open, and a dead one falls through the same way as never having had
+    // one at all.
+    const currentTabId = state.currentTabId();
+    const ownTab = (currentTabId && tabs.find((t) => t.id === currentTabId)) || null;
     return {
       label: state.label(),
       // Ownership is per session, so two agents can share a label without
@@ -90,9 +90,25 @@ export const handlers = {
       isolation: agentSpace ? 'space' : 'shared-window',
       agentSpace,
       agentSpaceName: state.AGENT_SPACE,
-      resolvesTo: state.currentTabId()
-        ? { reason: "this agent's current tab", tab: tabs.find((t) => t.id === state.currentTabId()) || null }
-        : { reason: 'no agent tab yet, falls back to the active tab', tab: active || null },
+      // A read-only tool and one that changes a tab no longer resolve the same
+      // way once this agent owns no tab, so each gets its own answer rather
+      // than one reason that is only half true.
+      resolvesTo: ownTab
+        ? {
+            readOnly: { reason: "this agent's current tab", tab: ownTab },
+            mutating: { reason: "this agent's current tab", tab: ownTab }
+          }
+        : {
+            readOnly: {
+              reason: 'no agent tab, so a read-only tool falls back to the tab the user is looking at',
+              tab: active || null
+            },
+            mutating: {
+              reason:
+                "no agent tab, so a tool that changes a tab is refused rather than acting on the user's tab. Pass a tab_id from list_tabs, or call open_url first.",
+              tab: null
+            }
+          },
       ownTabs: tabs.filter((t) => owned.has(t.id)),
       staleTabCount: state.staleIds().length,
       otherTabCount: tabs.filter((t) => !owned.has(t.id)).length

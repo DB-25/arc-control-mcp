@@ -78,19 +78,50 @@ Two rules that matter more than they look:
 1. Create `src/tools/<name>.js` exporting two things:
 
    ```js
-   export const tools = [ /* MCP tool definitions, with inputSchema */ ];
+   export const tools = [ /* MCP tool definitions, each with an `input` Zod schema */ ];
    export const handlers = { /* one async function per tool name */ };
    ```
 
 2. Add it to `MODULES` in `src/registry.js`.
 
 That is all. The registry throws at load on a duplicate tool name, a tool with
-no handler, or a handler with no tool definition, so a mismatch fails at startup
-rather than at call time.
+no handler, a handler with no tool definition, or a tool whose `input` is not a
+Zod object schema, so a mismatch fails at startup rather than at call time.
 
-Use the shared pieces in `src/tools/shared.js` (`TAB_ID`, `SELECTOR`, `VERBOSE`,
-`read`, `write`, `runPage`, `runTab`) so a new tool behaves like the others:
-implicit tab targeting, ownership flags, and the same annotations.
+### Schemas are Zod, and only Zod
+
+Declare arguments as `input: z.object({ ... })`, never as a hand-written
+`inputSchema`. The JSON Schema a tool advertises over MCP is generated from the
+Zod schema in `src/registry.js`, and the same schema validates every incoming
+call, so the two cannot drift apart. There is a test that fails if any module
+hand-writes an `inputSchema`.
+
+Use the shared pieces in `src/tools/schema.js` (`TAB_ID`, `SELECTOR`, `VERBOSE`,
+`EXACT`, `NTH`, `timeoutMs`) and in `src/tools/shared.js` (`read`, `write`,
+`runPage`, `runTab`) so a new tool behaves like the others: implicit tab
+targeting, ownership flags, and the same annotations. Two details worth knowing:
+
+- A field with `.default(x)` is automatically optional in the generated schema,
+  so do not also mark it `.optional()`. Defaults are applied by the parser, so a
+  handler can read `args.nth` without a fallback.
+- Prefer `z.number()` over `z.number().int()`. The int variant emits
+  `Number.MAX_SAFE_INTEGER` bounds into every `tools/list` response.
+
+### Two things the registry does for you, which bite if you bypass it
+
+The registry wraps every handler. That wrapper validates arguments, and it
+decides whether the tool may fall back to the tab the user is looking at, based
+on its `readOnlyHint` annotation.
+
+So **import `HANDLERS` from `src/registry.js`, not the handler from its module**,
+whenever you call a tool from a test or a script. An unwrapped handler has no
+argument validation, and it fails closed on tab resolution: it will refuse to
+use the user's active tab even for a read-only tool. Failing closed is
+deliberate, but it is surprising, and it has already confused one test author.
+
+`test/fixtures/tools-snapshot.json` is a golden snapshot of the advertised wire
+format. If a change to a schema is intentional, update the snapshot in the same
+commit and say why in the message.
 
 ## Conventions
 

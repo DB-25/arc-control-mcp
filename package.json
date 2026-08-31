@@ -46,6 +46,7 @@
   },
   "homepage": "https://github.com/DB-25/arc-control-mcp#readme",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0"
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.5.4"
   }
 }

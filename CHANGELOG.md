@@ -17,6 +17,58 @@ The second thread is protocol conformance. The tools themselves worked. How
 results, failures, timeouts and cancellations were reported over MCP did not
 match what a client, or a model reading the response, has any right to expect.
 
+### Changed: a tool that changes a tab will not touch the tab you are looking at
+
+A call with no `tab_id` used to resolve to this agent's own tab and then, failing
+that, to whatever tab was active in Arc. That second fallback applied to every
+tool, so an agent that called `go_back` or `reload_tab` without a `tab_id`
+navigated and reloaded a tab a human was reading. That happened.
+
+Resolution is now split by whether the tool changes anything:
+
+- An explicit `tab_id` always wins.
+- Otherwise, a tab this agent opened.
+- Otherwise, for a **read-only** tool, the tab you are looking at. Reading the
+  page you already have open is useful and harmless.
+- Otherwise the call is **refused**, with an error naming what to pass instead.
+
+`tab_id` was deliberately not made mandatory everywhere. That would force a
+`list_tabs` round trip before every call, and each `osascript` spawn costs a few
+hundred milliseconds. It would also break the implicit targeting that lets
+`open_url`, then `click`, then `fill` run without ids.
+
+`arc_status` now reports both branches, as `resolvesTo.readOnly` and
+`resolvesTo.mutating`, since one string can no longer describe both.
+
+Also fixed in the same area: a state file written by the pre-0.3.0 flat format is
+no longer treated as a finished run whose tabs can be reaped. It carries no
+session identity, so it may equally belong to a server still running the old
+code, and treating it as dead once marked two live user tabs for closing.
+
+### Added: arguments are validated before a handler runs
+
+Nothing validated tool arguments at all, so a wrong type surfaced as a confusing
+error from inside the page. Every tool now declares its arguments as a Zod
+schema, the JSON Schema advertised over MCP is generated from it, and the same
+schema validates the call. A bad argument comes back as an `isError` result
+naming it:
+
+```
+Invalid arguments for click. selector: Invalid input: expected string, received number
+```
+
+Because `batch` calls its peers through the registry, batch steps are validated
+too. Declared defaults are now applied by the parser rather than by a fallback in
+each handler. `zod` becomes a declared dependency: it was already present via the
+MCP SDK, so it deduplicates to a single copy and adds nothing to an install.
+
+The server stays on the SDK's low-level `Server` rather than moving to
+`McpServer.registerTool`, which rejects generated JSON Schema and would mean
+rewriting every schema again. It also does not declare `outputSchema` or return
+`structuredContent`: the low-level `Server` does not validate them, so declaring
+them would commit the project to a specification MUST with nothing enforcing it,
+and `execute_javascript` and `batch` have genuinely unschematisable outputs.
+
 ### MCP protocol conformance
 
 - **A tool that ran and failed now says so where the model can see it.** A

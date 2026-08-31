@@ -1,23 +1,25 @@
 import { ArcError } from '../jxa.js';
-import { TAB_ID, SELECTOR, VERBOSE, write, read, runPage, sleep } from './shared.js';
+import { z, TAB_ID, SELECTOR, VERBOSE, EXACT, NTH, timeoutMs, MAX_CALLER_TIMEOUT_MS } from './schema.js';
+import { write, read, runPage, sleep } from './shared.js';
 
 const POLL_MS = 250;
 const DEFAULT_WAIT_MS = 10000;
 // An MCP client abandons a request after 60s (the SDK's own default), and once
 // it does, the timedOut payload with waitedMs and the last counts is thrown
-// away. So a caller-supplied wait is capped well inside that ceiling. Progress
+// away. So a caller-supplied wait is capped well inside that ceiling, by the
+// MAX_CALLER_TIMEOUT_MS that schema.js holds for every waiting tool. Progress
 // notifications would not buy more time: a client MAY reset its clock on
 // progress and mostly does not.
-const MAX_CALLER_TIMEOUT_MS = 30000;
 const DEFAULT_SCROLL_PX = 800;
 const MAX_OPTIONS_LISTED = 25;
 const TARGET_ATTR_CHARS = 80;
 
-const EXACT = {
-  type: 'boolean',
-  description: 'For "text=" selectors, require the whole trimmed text to equal the label instead of containing it. No effect on CSS selectors.',
-  default: false
-};
+// The shared exact flag, narrowed to the wording these tools have always
+// advertised: the "no effect on CSS selectors" half is what stops a model
+// passing it blind and then wondering why nothing changed.
+const MATCH_EXACT = EXACT.describe(
+  'For "text=" selectors, require the whole trimmed text to equal the label instead of containing it. No effect on CSS selectors.'
+);
 
 // Both are interpolated straight into page scripts, so they have to be literals.
 const matchOpts = (args) => JSON.stringify({ exact: args.exact === true });
@@ -45,17 +47,13 @@ export const tools = [
       'Click an element. Accepts a CSS selector or "text=Label". Scrolls it into view and dispatches a real pointer sequence, so framework handlers fire. ' +
       TEXT_NOTE +
       ' Returns urlBefore, the url as it was immediately before the click: the tab snapshot can be taken before a navigation settles, so follow with wait_for_load when the click navigates.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: SELECTOR,
-        tab_id: TAB_ID,
-        nth: { type: 'number', description: 'Which match to click when several exist, 0-based. Order is exact text matches first, then substring matches, each in DOM order.', default: 0 },
-        exact: EXACT,
-        verbose: VERBOSE
-      },
-      required: ['selector']
-    },
+    input: z.object({
+      selector: SELECTOR,
+      tab_id: TAB_ID.optional(),
+      nth: NTH.describe('Which match to click when several exist, 0-based. Order is exact text matches first, then substring matches, each in DOM order.'),
+      exact: MATCH_EXACT,
+      verbose: VERBOSE
+    }),
     annotations: write('Click')
   },
   {
@@ -64,23 +62,20 @@ export const tools = [
       'Set the value of an input, textarea or contenteditable. Uses the native setter and fires input and change, so React and similar frameworks register it. ' +
       'Fails with an error naming the tag when the target cannot be filled: a heading or other non-input, a disabled or readonly field, or a <select> (use select_option for those). ' +
       TEXT_NOTE,
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: SELECTOR,
-        value: { type: 'string', description: 'Value to set' },
-        tab_id: TAB_ID,
-        nth: { type: 'number', description: 'Which match to fill, 0-based', default: 0 },
-        submit: {
-          type: 'boolean',
-          description: 'Press Enter and request form submit afterwards. The tab usually navigates, so follow with wait_for_load: the returned tab snapshot may predate the navigation, and urlBefore reports the url from just before the key press.',
-          default: false
-        },
-        exact: EXACT,
-        verbose: VERBOSE
-      },
-      required: ['selector', 'value']
-    },
+    input: z.object({
+      selector: SELECTOR,
+      value: z.string().describe('Value to set'),
+      tab_id: TAB_ID.optional(),
+      nth: NTH.describe('Which match to fill, 0-based'),
+      submit: z
+        .boolean()
+        .default(false)
+        .describe(
+          'Press Enter and request form submit afterwards. The tab usually navigates, so follow with wait_for_load: the returned tab snapshot may predate the navigation, and urlBefore reports the url from just before the key press.'
+        ),
+      exact: MATCH_EXACT,
+      verbose: VERBOSE
+    }),
     annotations: write('Fill Field')
   },
   {
@@ -88,15 +83,11 @@ export const tools = [
     description:
       'Choose an option in a select element, by exact option value or exact visible label. ' +
       'When nothing matches, the failure lists the options that do exist, so the next call can pick a real one.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: { ...SELECTOR, description: 'CSS selector for the <select>. "text=" cannot reach a select element, so use a CSS selector here.' },
-        option: { type: 'string', description: 'Option value or visible text, matched exactly after trimming' },
-        tab_id: TAB_ID
-      },
-      required: ['selector', 'option']
-    },
+    input: z.object({
+      selector: SELECTOR.describe('CSS selector for the <select>. "text=" cannot reach a select element, so use a CSS selector here.'),
+      option: z.string().describe('Option value or visible text, matched exactly after trimming'),
+      tab_id: TAB_ID.optional()
+    }),
     annotations: write('Select Option')
   },
   {
@@ -104,32 +95,27 @@ export const tools = [
     description:
       'Dispatch a key press to an element, or to the focused element when no selector is given. Handles named keys (Enter, Escape, Tab, ArrowDown) and single printable characters. ' +
       'Returns only a minimal identity for the element that received the key (tag plus whichever of id, name, type and aria-label exist); use query_elements when you need the full picture.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        key: { type: 'string', description: 'Key name, for example Enter, Escape, Tab, ArrowDown, or a single printable character' },
-        selector: SELECTOR,
-        tab_id: TAB_ID,
-        exact: EXACT
-      },
-      required: ['key']
-    },
+    input: z.object({
+      key: z.string().describe('Key name, for example Enter, Escape, Tab, ArrowDown, or a single printable character'),
+      selector: SELECTOR.optional(),
+      tab_id: TAB_ID.optional(),
+      exact: MATCH_EXACT
+    }),
     annotations: write('Press Key')
   },
   {
     name: 'scroll',
     description: 'Scroll the page, or scroll an element into view. Page scrolls report scrollY, pageHeight and viewport, so you can tell how much is left.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tab_id: TAB_ID,
-        selector: { ...SELECTOR, description: 'Scroll this element into view instead of scrolling the page. CSS selector, or "text=Label" (substring, exact matches ranked first).' },
-        direction: { type: 'string', enum: ['down', 'up', 'top', 'bottom'], description: 'Page scroll direction', default: 'down' },
-        amount: { type: 'number', description: 'Pixels to scroll for up and down', default: DEFAULT_SCROLL_PX },
-        exact: EXACT,
-        verbose: VERBOSE
-      }
-    },
+    input: z.object({
+      tab_id: TAB_ID.optional(),
+      selector: SELECTOR.describe(
+        'Scroll this element into view instead of scrolling the page. CSS selector, or "text=Label" (substring, exact matches ranked first).'
+      ).optional(),
+      direction: z.enum(['down', 'up', 'top', 'bottom']).default('down').describe('Page scroll direction'),
+      amount: z.number().default(DEFAULT_SCROLL_PX).describe('Pixels to scroll for up and down'),
+      exact: MATCH_EXACT,
+      verbose: VERBOSE
+    }),
     annotations: write('Scroll', { idempotent: true })
   },
   {
@@ -138,25 +124,14 @@ export const tools = [
       'Poll until an element appears, becomes visible, or disappears. Use after a click that loads content. ' +
       'On timeout it says so explicitly with waitedMs and the last counts, and a broken selector or page error fails straight away instead of burning the whole timeout. ' +
       'The visible state ignores screen-reader clipping (boxes under 2x2 px, inset clip-path), which nothing can actually click.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        selector: SELECTOR,
-        tab_id: TAB_ID,
-        state: { type: 'string', enum: ['present', 'visible', 'absent'], description: 'Condition to wait for', default: 'visible' },
-        timeout_ms: {
-          type: 'number',
-          description:
-            `Give up after this long, capped at ${MAX_CALLER_TIMEOUT_MS}ms because a longer call is killed by the client before it can answer. ` +
-            'To wait longer, call wait_for_selector again: every call returns the current counts, so repeated short waits tell you more than one long one.',
-          default: DEFAULT_WAIT_MS,
-          maximum: MAX_CALLER_TIMEOUT_MS
-        },
-        exact: EXACT,
-        verbose: VERBOSE
-      },
-      required: ['selector']
-    },
+    input: z.object({
+      selector: SELECTOR,
+      tab_id: TAB_ID.optional(),
+      state: z.enum(['present', 'visible', 'absent']).default('visible').describe('Condition to wait for'),
+      timeout_ms: timeoutMs(DEFAULT_WAIT_MS, 'Give up after this long. Every call returns the current counts, so repeated short waits tell you more than one long one.'),
+      exact: MATCH_EXACT,
+      verbose: VERBOSE
+    }),
     annotations: read('Wait For Selector')
   }
 ];

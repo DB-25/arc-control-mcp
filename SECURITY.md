@@ -30,7 +30,15 @@ What that means concretely:
   domains and no read-only mode.
 - Ownership tracking (the `mine` flag, `close_own_tabs`, `ARC_MCP_LABEL`) is
   bookkeeping so agents do not step on each other's tabs. It is **not** a
-  security boundary. No tool refuses to touch a tab, including yours.
+  security boundary: no tool refuses a tab you name with an explicit `tab_id`,
+  including yours.
+- One guard does exist, and it is aimed at an agent's mistake rather than at a
+  determined agent. A tool that changes a tab will not fall back to the tab you
+  are looking at: with no `tab_id` and no tab of its own, the call is refused.
+  That is there because an agent once ran `go_back` and `reload_tab` with no
+  `tab_id` and navigated a tab someone was working in. It is not a sandbox, and
+  an agent that passes an explicit `tab_id` can still drive any tab you have
+  open, by design.
 - An Arc space is not a security boundary either. It keeps agent tabs out of your
   sidebar, nothing more.
 

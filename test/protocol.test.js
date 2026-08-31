@@ -269,19 +269,59 @@ describe('tools/call maps failure the way the spec asks', () => {
     });
   });
 
-  it('says an internal error is internal, rather than blaming Arc or the page', async () => {
-    // An ArcError is written for the caller and explains its own remedy. A
-    // TypeError from this server is a bug here, and saying so is what stops the
-    // caller retrying a call that cannot start working.
+  it('rejects a wrong-typed argument before it can reach a handler or Arc', async () => {
+    // This used to reach a TypeError inside batch and be reported as an
+    // internal bug. Arguments are now validated against the tool's own schema
+    // first, so the caller is told which argument was wrong instead.
     await withServer(async (server) => {
-      // steps is declared as an array; a string reaches the handler and breaks
-      // inside it, which is exactly the "not an Arc problem" case.
       const { result } = await server.request('tools/call', {
         name: 'batch',
         arguments: { steps: 'not-an-array' }
       });
-      assert.equal(result.isError, true);
-      assert.match(result.content[0].text, /internal arc-control error/);
+      assert.equal(result.isError, true, 'a rejected argument came back unflagged');
+      const text = result.content[0].text;
+      assert.match(text, /Invalid arguments for batch/, 'does not say which tool rejected the call');
+      assert.match(text, /steps/, 'does not name the offending argument');
+      assert.doesNotMatch(
+        text,
+        /internal arc-control error/,
+        'a caller mistake must not be reported as a bug in this server'
+      );
     });
+  });
+
+  it('names the offending argument for every kind of bad input', async () => {
+    // One case per shape of mistake a model actually makes, all caught in Node
+    // with nothing sent to Arc.
+    const cases = [
+      { name: 'click', arguments: { tab_id: 'x', selector: 123 }, expect: /selector/ },
+      { name: 'query_elements', arguments: { tab_id: 'x' }, expect: /selector/ },
+      { name: 'get_page_content', arguments: { tab_id: 'x', max_chars: 'lots' }, expect: /max_chars/ },
+      { name: 'switch_to_tab', arguments: {}, expect: /tab_id/ },
+      { name: 'list_tabs', arguments: { scope: 'everything' }, expect: /scope/ },
+      { name: 'wait_for_selector', arguments: { tab_id: 'x', selector: 'h1', timeout_ms: 90000 }, expect: /timeout_ms/ }
+    ];
+
+    await withServer(async (server) => {
+      for (const { name, arguments: args, expect } of cases) {
+        const { result } = await server.request('tools/call', { name, arguments: args });
+        assert.equal(result.isError, true, `${name} did not flag bad arguments`);
+        assert.match(result.content[0].text, expect, `${name} did not name the offending argument`);
+      }
+    });
+  });
+
+  it('still reports a genuine internal fault as this server bug, not Arc', async () => {
+    // The wording only exists on the non-ArcError branch of tools/call. Reaching
+    // it from outside is now hard by design, since arguments are schema checked,
+    // so this pins the branch by inspection rather than by breaking a handler.
+    const source = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8');
+    assert.match(source, /internal arc-control error/, 'the internal-fault wording is gone');
+    const branch = source.slice(source.indexOf('instanceof ArcError'));
+    assert.match(
+      branch.slice(0, 400),
+      /internal arc-control error/,
+      'the wording must sit on the non-ArcError branch, so an ArcError is never called a bug'
+    );
   });
 });

@@ -200,11 +200,21 @@ Not restrictive by design. Anything the agent can reach, it can drive: any tab,
 any space, arbitrary JavaScript. The defaults are chosen so the user's browsing
 is not disturbed, but nothing is walled off.
 
-- **Implicit target**: a call with no `tab_id` uses this agent's current tab,
-  falling back to whatever tab is active in Arc. Pass a `tab_id` to address any
-  other tab.
-- **Ownership is information, not enforcement**: every tab is flagged `mine`,
-  and `close_own_tabs` exists for cleanup, but no tool refuses to touch a tab.
+- **Implicit target**: a call with no `tab_id` uses a tab this agent opened. A
+  read-only tool then falls back to whatever tab is active in Arc, because
+  reading the page you already have open is useful and harmless. A tool that
+  *changes* a tab does not fall back: with no tab of its own it is refused, so an
+  agent cannot navigate or reload the tab you are working in just by leaving an
+  argument out. Pass a `tab_id` to address any tab deliberately.
+- **Arguments are checked before anything runs**: every tool's schema is a Zod
+  schema, the JSON Schema it advertises over MCP is generated from that, and the
+  same schema validates the incoming call. A wrong type comes back as
+  `Invalid arguments for click. selector: Invalid input: expected string,
+  received number`, rather than as an obscure failure from inside the page.
+- **Ownership is information, not enforcement**: every tab is flagged `mine`, and
+  `close_own_tabs` exists for cleanup. No tool refuses a tab you name with an
+  explicit `tab_id`. The one refusal above is about an unnamed tab, not a named
+  one.
 - **No focus stealing**: Arc auto-selects a newly created tab, so `open_url`
   puts the previous selection back, and only when Arc actually took it. If the
   user switched tabs while the page was opening, their choice stands. Pass
@@ -240,7 +250,7 @@ loses nothing but a few wasted calls.
 | `switch_to_tab` | Make a tab active in its window. `activate` also brings Arc to the front. |
 | `close_tab` | Close one tab. |
 | `close_own_tabs` | Close every tab this agent opened, leaving the user's alone. `include_stale` also closes tabs leaked by a dead previous run of the same label. |
-| `arc_status` | Owned tabs, whether the agent space exists, what the implicit target resolves to, and how many stale tabs a previous run left behind. |
+| `arc_status` | Owned tabs, whether the agent space exists, what a call with no `tab_id` resolves to (reported separately for read-only and for changing tools), and how many stale tabs a previous run left behind. |
 
 ### Navigation
 

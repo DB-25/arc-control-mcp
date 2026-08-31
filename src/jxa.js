@@ -104,7 +104,11 @@ function target() {
     const tab = locate(P.default_tab_id);
     if (tab) return tab;
   }
-  return mainWindow().activeTab;
+  // Falling through to the user's active tab is only safe for a tool that
+  // reads. Doing it for one that acts is how an agent ends up reloading or
+  // navigating the tab someone is working in, so refuse and say what to pass.
+  if (P.allow_active_tab) return mainWindow().activeTab;
+  throw new Error("NO_TARGET_TAB");
 }
 
 function agentSpace() {
@@ -177,6 +181,13 @@ export function friendly(message) {
   const noMatch = sentinel(message, 'SELECTOR_NO_MATCH');
   if (noMatch) {
     return `No element on the page matches the selector "${noMatch}".`;
+  }
+  if (message.includes('NO_TARGET_TAB')) {
+    return [
+      'This tool changes a tab, and no tab was given. This agent has not opened one yet, and',
+      'it will not act on whatever tab the user happens to be looking at.',
+      'Pass an explicit tab_id from list_tabs, or call open_url first to get your own tab.'
+    ].join('\n');
   }
   if (message.includes('ARC_NOT_RUNNING')) {
     return 'Arc is not running. Launch Arc, or use open_url, which starts it.';

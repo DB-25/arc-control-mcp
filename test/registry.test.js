@@ -4,8 +4,9 @@
 // validator really does reject the shapes it claims to.
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -31,22 +32,39 @@ after(() => {
  */
 async function importRegistryWith(moduleFile, source) {
   const dir = mkdtempSync(join(tmpdir(), 'arc-registry-'));
+  // src/registry.js imports zod by bare specifier. A temp dir outside the repo
+  // has nothing to resolve it against, so lend it the real node_modules.
+  try {
+    symlinkSync(fileURLToPath(new URL('../node_modules', import.meta.url)), join(dir, 'node_modules'), 'dir');
+  } catch {
+    // A platform without symlink permission can fall back to no link: the
+    // import will fail loudly rather than silently passing.
+  }
   temps.push(dir);
   cpSync(SRC_DIR, join(dir, 'src'), { recursive: true });
   if (moduleFile) writeFileSync(join(dir, 'src', 'tools', moduleFile), source);
   return import(pathToFileURL(join(dir, 'src', 'registry.js')).href);
 }
 
-// A module the validator should accept, used as the base for each broken variant.
-const fakeModule = (tool, handlerName = tool.name) => `
-export const tools = [${JSON.stringify(tool)}];
+/**
+ * A module the validator should accept, used as the base for each broken
+ * variant. `input` is emitted as source rather than JSON, because a Zod schema
+ * is a live object and cannot be serialised into a generated module.
+ */
+const fakeModule = (tool, handlerName = tool.name) => {
+  const { input = GOOD_INPUT_SOURCE, ...rest } = tool;
+  return `
+import { z } from 'zod';
+export const tools = [{ ...${JSON.stringify(rest)}, input: ${input} }];
 export const handlers = { ${JSON.stringify(handlerName)}: async () => ({ ok: true }) };
 `;
+};
+
+const GOOD_INPUT_SOURCE = "z.object({ thing: z.string().describe('A thing').optional() })";
 
 const GOOD_TOOL = {
   name: 'fake_tool',
   description: 'A syntactically valid tool used to prove the harness itself is sound.',
-  inputSchema: { type: 'object', properties: { thing: { type: 'string', description: 'A thing' } } },
   annotations: { title: 'Fake Tool' }
 };
 
@@ -134,35 +152,37 @@ describe('the registry validator rejects malformed tools at import', () => {
     // validate() has its own "tool with no name" message, but the loop looks the
     // handler up by name before calling it, so a nameless tool is caught as a
     // missing handler. It is still rejected, which is what matters at startup.
-    const { description, inputSchema, annotations } = GOOD_TOOL;
+    const { description, annotations } = GOOD_TOOL;
     await assert.rejects(
-      () => importRegistryWith('spaces.js', fakeModule({ description, inputSchema, annotations }, 'fake_tool')),
+      () => importRegistryWith('spaces.js', fakeModule({ description, annotations }, 'fake_tool')),
       /declares undefined with no handler/
     );
   });
 
-  it('rejects an inputSchema that is not an object schema', async () => {
+  it('rejects a tool with no input schema at all', async () => {
     await assert.rejects(
-      () => importRegistryWith('spaces.js', fakeModule({ ...GOOD_TOOL, inputSchema: { type: 'string' } })),
-      /needs an inputSchema of type object with a properties map/
+      () => importRegistryWith('spaces.js', fakeModule({ ...GOOD_TOOL, input: 'undefined' })),
+      /needs an "input" Zod schema/
     );
   });
 
-  it('rejects an inputSchema with no properties map', async () => {
+  it('rejects an input schema that is not a z.object, so arguments stay named', async () => {
     await assert.rejects(
-      () => importRegistryWith('spaces.js', fakeModule({ ...GOOD_TOOL, inputSchema: { type: 'object' } })),
-      /needs an inputSchema of type object with a properties map/
+      () => importRegistryWith('spaces.js', fakeModule({ ...GOOD_TOOL, input: 'z.string()' })),
+      /must be a z\.object/
     );
   });
 
-  it('rejects a required argument that is not declared in properties', async () => {
-    const tool = {
-      ...GOOD_TOOL,
-      inputSchema: { type: 'object', properties: { thing: { type: 'string' } }, required: ['missing_arg'] }
-    };
+  it('rejects an input that is a plain JSON Schema rather than a Zod schema', async () => {
+    // The old hand-written form. It has no safeParse, so nothing would validate
+    // arguments, which is the whole point of generating the schema from Zod.
     await assert.rejects(
-      () => importRegistryWith('spaces.js', fakeModule(tool)),
-      /requires "missing_arg" but never declares it in properties/
+      () =>
+        importRegistryWith(
+          'spaces.js',
+          fakeModule({ ...GOOD_TOOL, input: "{ type: 'object', properties: {} }" })
+        ),
+      /needs an "input" Zod schema/
     );
   });
 

@@ -1,4 +1,5 @@
-import { TAB_ID, SELECTOR, VERBOSE, read, runPage } from './shared.js';
+import { z, TAB_ID, SELECTOR, VERBOSE } from './schema.js';
+import { read, runPage } from './shared.js';
 
 const DEFAULT_MAX_CHARS = 20000;
 const DEFAULT_ELEMENT_LIMIT = 40;
@@ -14,70 +15,57 @@ export const tools = [
     name: 'get_page_content',
     description:
       'Get the visible text of a page, or of every element matching a selector joined with blank lines. Always reports "matched", so a partial answer is never silent. Nested matches repeat their text, so prefer a leaf-ish selector.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tab_id: TAB_ID,
-        selector: SELECTOR,
-        first_only: { type: 'boolean', description: 'Return only the first match instead of joining all of them', default: false },
-        max_chars: { type: 'number', description: 'Truncate the joined text at this length', default: DEFAULT_MAX_CHARS }
-      }
-    },
+    input: z.object({
+      tab_id: TAB_ID.optional(),
+      selector: SELECTOR.optional(),
+      first_only: z.boolean().default(false).describe('Return only the first match instead of joining all of them'),
+      max_chars: z.number().default(DEFAULT_MAX_CHARS).describe('Truncate the joined text at this length')
+    }),
     annotations: read('Get Page Content')
   },
   {
     name: 'get_html',
     description:
       'Get the HTML of a page or element. Use when you need markup, attributes or structure rather than text. Returns one element only: it reports how many matched and takes nth to pick a different one.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tab_id: TAB_ID,
-        selector: SELECTOR,
-        nth: { type: 'number', description: 'Which match to return when several exist, 0-based', default: 0 },
-        outer: { type: 'boolean', description: 'Include the element tag itself', default: true },
-        max_chars: { type: 'number', description: 'Truncate at this length', default: DEFAULT_MAX_CHARS }
-      }
-    },
+    input: z.object({
+      tab_id: TAB_ID.optional(),
+      selector: SELECTOR.optional(),
+      nth: z.number().default(0).describe('Which match to return when several exist, 0-based'),
+      outer: z.boolean().default(true).describe('Include the element tag itself'),
+      max_chars: z.number().default(DEFAULT_MAX_CHARS).describe('Truncate at this length')
+    }),
     annotations: read('Get HTML')
   },
   {
     name: 'query_elements',
     description:
       'Find elements and return structured details: text, value, href, visibility, disabled state and attributes. The main way to see what is on a page before acting on it. "text=" matching is substring, with exact matches ranked first; pass exact to require an exact match.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tab_id: TAB_ID,
-        selector: SELECTOR,
-        limit: { type: 'number', description: 'Maximum elements to return', default: DEFAULT_ELEMENT_LIMIT },
-        visible_only: { type: 'boolean', description: 'Skip hidden elements', default: false },
-        exact: { type: 'boolean', description: 'For a "text=" selector, match the whole text rather than a substring', default: false },
-        verbose: VERBOSE
-      },
-      required: ['selector']
-    },
+    input: z.object({
+      tab_id: TAB_ID.optional(),
+      selector: SELECTOR,
+      limit: z.number().default(DEFAULT_ELEMENT_LIMIT).describe('Maximum elements to return'),
+      visible_only: z.boolean().default(false).describe('Skip hidden elements'),
+      exact: z.boolean().default(false).describe('For a "text=" selector, match the whole text rather than a substring'),
+      verbose: VERBOSE
+    }),
     annotations: read('Query Elements')
   },
   {
     name: 'get_links',
     description:
       'List links on the page with their text and resolved href. Pass unique to collapse repeated href and text pairs, which navigation and footers produce in bulk.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        tab_id: TAB_ID,
-        query: { type: 'string', description: 'Case-insensitive substring matched against link text and href' },
-        unique: { type: 'boolean', description: 'Collapse links with an identical href and text, reporting how many were dropped', default: false },
-        limit: { type: 'number', description: 'Maximum links to return', default: DEFAULT_LINK_LIMIT }
-      }
-    },
+    input: z.object({
+      tab_id: TAB_ID.optional(),
+      query: z.string().optional().describe('Case-insensitive substring matched against link text and href'),
+      unique: z.boolean().default(false).describe('Collapse links with an identical href and text, reporting how many were dropped'),
+      limit: z.number().default(DEFAULT_LINK_LIMIT).describe('Maximum links to return')
+    }),
     annotations: read('Get Links')
   },
   {
     name: 'get_page_info',
     description: 'Page overview: title, url, ready state, meta description, headings, form and frame counts. Cheap orientation before deciding what to do.',
-    inputSchema: { type: 'object', properties: { tab_id: TAB_ID } },
+    input: z.object({ tab_id: TAB_ID.optional() }),
     annotations: read('Get Page Info')
   }
 ];

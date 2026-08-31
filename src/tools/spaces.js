@@ -1,20 +1,18 @@
+import { z } from './schema.js';
 import { read, write, runTab } from './shared.js';
 
 export const tools = [
   {
     name: 'list_spaces',
     description: 'List Arc spaces in the front window, with tab counts and which is active. Tabs pinned to the top of the sidebar (location topApp) belong to no space, so the reported tabsInSpaces plus topAppCount is what reconciles with totalTabs. Counts cover the front window only, while list_tabs covers every window.',
-    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+    // strictObject, so the generated schema keeps additionalProperties: false.
+    input: z.strictObject({}),
     annotations: read('List Spaces', { openWorld: false })
   },
   {
     name: 'focus_space',
     description: "Switch the front Arc window to a space. This changes what the user sees, so it is rarely needed: tabs in an unfocused space are still fully readable and scriptable.",
-    inputSchema: {
-      type: 'object',
-      properties: { space: { type: 'string', description: 'Space id or title from list_spaces' } },
-      required: ['space']
-    },
+    input: z.object({ space: z.string().describe('Space id or title from list_spaces') }),
     annotations: write('Focus Space', { idempotent: true, openWorld: false })
   }
 ];
