@@ -35,12 +35,6 @@ One runtime dependency, `@modelcontextprotocol/sdk`. No build step.
 
 ## Install
 
-> [!NOTE]
-> Not on npm yet, so the `npx` commands below will fail with a 404 until the
-> first release is published. Until then, use the "From a git checkout"
-> instructions at the end of this section. Delete this note once
-> `arc-control-mcp` is published.
-
 Nothing to clone. Any MCP client can start the server with `npx`, and `@latest`
 is also how it upgrades: the next start picks up a new release.
 
