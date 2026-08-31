@@ -27,7 +27,7 @@ ARC_MCP_INTEGRATION=1 npm test        # adds the tests that drive real Arc
 
 The unit tests cover the parts that are pure Node: script composition, argument
 validation, error mapping, the registry's parity check. They run anywhere,
-including CI on Linux with no Arc present, and CI runs them on Node 20 and 22.
+including CI on Linux with no Arc present, and CI runs them on Node 20, 22 and 24.
 
 Anything that actually talks to Arc cannot run in CI. Arc-dependent tests only
 run on macOS with Arc installed and both permissions granted, and they skip

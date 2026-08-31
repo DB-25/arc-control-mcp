@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/DB-25/arc-control-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/DB-25/arc-control-mcp/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](package.json)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](package.json)
 
 An MCP server that drives the Arc browser on macOS: tabs, navigation, page
 reading, DOM interaction and scripting.
