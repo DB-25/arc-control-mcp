@@ -1,0 +1,50 @@
+{
+  "name": "arc-control-mcp",
+  "version": "0.3.0",
+  "description": "MCP server for controlling the Arc browser on macOS via JavaScript for Automation",
+  "type": "module",
+  "bin": {
+    "arc-control-mcp": "src/index.js"
+  },
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "start": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin"
+  ],
+  "files": [
+    "src",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "arc",
+    "browser",
+    "automation",
+    "macos",
+    "jxa",
+    "applescript",
+    "ai-agent"
+  ],
+  "author": "DB-25 (Dhruv Baradiya)",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DB-25/arc-control-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/DB-25/arc-control-mcp/issues"
+  },
+  "homepage": "https://github.com/DB-25/arc-control-mcp#readme",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  }
+}

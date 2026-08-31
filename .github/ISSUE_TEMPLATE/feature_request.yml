@@ -1,0 +1,48 @@
+name: Feature request
+description: Suggest a new tool, option, or behaviour
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        This is a small personal project scoped to driving Arc on macOS through
+        Apple Events. Requests that need CDP or a different browser are probably
+        out of scope, but say so anyway: it may be worth documenting as a
+        limitation.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do
+      description: The task, not the solution. What did the agent need and not have?
+      placeholder: >
+        I wanted the agent to confirm a layout change visually, and there is no
+        way to see the page.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you have in mind
+      description: A new tool, a new option on an existing tool, or a change in behaviour.
+    validations:
+      required: false
+
+  - type: textarea
+    id: workaround
+    attributes:
+      label: Current workaround
+      description: >
+        What you do today instead, including anything you got working through
+        `execute_javascript`. That often turns straight into the implementation.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I have read the known limitations in the README
+        - label: I have searched existing issues

@@ -1,0 +1,317 @@
+import { TAB_ID, SELECTOR, VERBOSE, write, read, runPage, sleep } from './shared.js';
+
+const POLL_MS = 250;
+const DEFAULT_WAIT_MS = 10000;
+const DEFAULT_SCROLL_PX = 800;
+const MAX_OPTIONS_LISTED = 25;
+const TARGET_ATTR_CHARS = 80;
+
+const EXACT = {
+  type: 'boolean',
+  description: 'For "text=" selectors, require the whole trimmed text to equal the label instead of containing it. No effect on CSS selectors.',
+  default: false
+};
+
+// Both are interpolated straight into page scripts, so they have to be literals.
+const matchOpts = (args) => JSON.stringify({ exact: args.exact === true });
+const verboseFlag = (args) => String(args.verbose === true);
+
+const TEXT_NOTE =
+  '"text=Label" matches on visible text as a substring, with exact matches ranked first, so a short label also matches longer ones. ' +
+  'Check the returned "matches" count, and pass exact when it is above 1.';
+
+export const tools = [
+  {
+    name: 'click',
+    description:
+      'Click an element. Accepts a CSS selector or "text=Label". Scrolls it into view and dispatches a real pointer sequence, so framework handlers fire. ' +
+      TEXT_NOTE +
+      ' Returns urlBefore, the url as it was immediately before the click: the tab snapshot can be taken before a navigation settles, so follow with wait_for_load when the click navigates.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: SELECTOR,
+        tab_id: TAB_ID,
+        nth: { type: 'number', description: 'Which match to click when several exist, 0-based. Order is exact text matches first, then substring matches, each in DOM order.', default: 0 },
+        exact: EXACT,
+        verbose: VERBOSE
+      },
+      required: ['selector']
+    },
+    annotations: write('Click')
+  },
+  {
+    name: 'fill',
+    description:
+      'Set the value of an input, textarea or contenteditable. Uses the native setter and fires input and change, so React and similar frameworks register it. ' +
+      'Fails with an error naming the tag when the target cannot be filled: a heading or other non-input, a disabled or readonly field, or a <select> (use select_option for those). ' +
+      TEXT_NOTE,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: SELECTOR,
+        value: { type: 'string', description: 'Value to set' },
+        tab_id: TAB_ID,
+        nth: { type: 'number', description: 'Which match to fill, 0-based', default: 0 },
+        submit: {
+          type: 'boolean',
+          description: 'Press Enter and request form submit afterwards. The tab usually navigates, so follow with wait_for_load: the returned tab snapshot may predate the navigation, and urlBefore reports the url from just before the key press.',
+          default: false
+        },
+        exact: EXACT,
+        verbose: VERBOSE
+      },
+      required: ['selector', 'value']
+    },
+    annotations: write('Fill Field')
+  },
+  {
+    name: 'select_option',
+    description:
+      'Choose an option in a select element, by exact option value or exact visible label. ' +
+      'When nothing matches, the failure lists the options that do exist, so the next call can pick a real one.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: { ...SELECTOR, description: 'CSS selector for the <select>. "text=" cannot reach a select element, so use a CSS selector here.' },
+        option: { type: 'string', description: 'Option value or visible text, matched exactly after trimming' },
+        tab_id: TAB_ID
+      },
+      required: ['selector', 'option']
+    },
+    annotations: write('Select Option')
+  },
+  {
+    name: 'press_key',
+    description:
+      'Dispatch a key press to an element, or to the focused element when no selector is given. Handles named keys (Enter, Escape, Tab, ArrowDown) and single printable characters. ' +
+      'Returns only a minimal identity for the element that received the key (tag plus whichever of id, name, type and aria-label exist); use query_elements when you need the full picture.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        key: { type: 'string', description: 'Key name, for example Enter, Escape, Tab, ArrowDown, or a single printable character' },
+        selector: SELECTOR,
+        tab_id: TAB_ID,
+        exact: EXACT
+      },
+      required: ['key']
+    },
+    annotations: write('Press Key')
+  },
+  {
+    name: 'scroll',
+    description: 'Scroll the page, or scroll an element into view. Page scrolls report scrollY, pageHeight and viewport, so you can tell how much is left.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        tab_id: TAB_ID,
+        selector: { ...SELECTOR, description: 'Scroll this element into view instead of scrolling the page. CSS selector, or "text=Label" (substring, exact matches ranked first).' },
+        direction: { type: 'string', enum: ['down', 'up', 'top', 'bottom'], description: 'Page scroll direction', default: 'down' },
+        amount: { type: 'number', description: 'Pixels to scroll for up and down', default: DEFAULT_SCROLL_PX },
+        exact: EXACT,
+        verbose: VERBOSE
+      }
+    },
+    annotations: write('Scroll')
+  },
+  {
+    name: 'wait_for_selector',
+    description:
+      'Poll until an element appears, becomes visible, or disappears. Use after a click that loads content. ' +
+      'On timeout it says so explicitly with waitedMs and the last counts, and a broken selector or page error fails straight away instead of burning the whole timeout. ' +
+      'The visible state ignores screen-reader clipping (boxes under 2x2 px, inset clip-path), which nothing can actually click.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        selector: SELECTOR,
+        tab_id: TAB_ID,
+        state: { type: 'string', enum: ['present', 'visible', 'absent'], description: 'Condition to wait for', default: 'visible' },
+        timeout_ms: { type: 'number', description: 'Give up after this long', default: DEFAULT_WAIT_MS },
+        exact: EXACT,
+        verbose: VERBOSE
+      },
+      required: ['selector']
+    },
+    annotations: read('Wait For Selector')
+  }
+];
+
+export const handlers = {
+  click: async (args) => {
+    const { result, tab } = await runPage(
+      args,
+      `var els = A.all(${JSON.stringify(args.selector)}, null, ${matchOpts(args)});
+       var el = els[${args.nth ?? 0}];
+       if (!el) return { error: 'no_match', matches: els.length };
+       var before = location.href;
+       A.click(el);
+       return { clicked: A.describe(el, ${verboseFlag(args)}), matches: els.length, urlBefore: before };`
+    );
+    if (result?.error === 'no_match') {
+      return { ok: false, error: `No element matches ${args.selector}`, matches: result.matches, tab };
+    }
+    return { ok: true, ...result, tab };
+  },
+
+  // A.setValue throws for anything unfillable and runPage turns that into an
+  // ArcError naming the tag, so there is deliberately no catch here: only a
+  // genuinely absent selector gets the soft failure below.
+  fill: async (args) => {
+    const submit = args.submit === true;
+    const { result, tab } = await runPage(
+      args,
+      `var els = A.all(${JSON.stringify(args.selector)}, null, ${matchOpts(args)});
+       var el = els[${args.nth ?? 0}];
+       if (!el) return { error: 'no_match', matches: els.length };
+       A.setValue(el, ${JSON.stringify(args.value)});
+       // Describe before submitting, so filled.value shows what landed even if
+       // the form resets or navigates.
+       var out = { filled: A.describe(el, ${verboseFlag(args)}), matches: els.length };
+       ${submit
+         ? `out.urlBefore = location.href;
+       A.key(el, 'Enter');
+       if (el.form && el.form.requestSubmit) { try { el.form.requestSubmit(); } catch (e) {} }`
+         : ''}
+       return out;`
+    );
+    if (result?.error === 'no_match') {
+      return { ok: false, error: `No element matches ${args.selector}`, matches: result.matches, tab };
+    }
+    if (submit) {
+      return { ok: true, ...result, submitted: true, note: 'The tab may still be navigating. Call wait_for_load before reading the page.', tab };
+    }
+    return { ok: true, ...result, tab };
+  },
+
+  select_option: async (args) => {
+    const { result, tab } = await runPage(
+      args,
+      `var el = A.one(${JSON.stringify(args.selector)});
+       if (!el) return { error: 'no_match' };
+       var tag = el.tagName.toLowerCase();
+       if (tag !== 'select') return { error: 'not_select', tag: tag };
+       var want = ${JSON.stringify(args.option)};
+       var chosen = null;
+       for (var i = 0; i < el.options.length; i++) {
+         var o = el.options[i];
+         if (o.value === want || (o.text || '').trim() === want) {
+           el.selectedIndex = i;
+           chosen = { value: o.value, text: (o.text || '').trim() };
+           break;
+         }
+       }
+       if (!chosen) {
+         // Listing what is there turns a dead end into a recoverable next call.
+         var available = [];
+         for (var j = 0; j < el.options.length && j < ${MAX_OPTIONS_LISTED}; j++) {
+           available.push({ value: el.options[j].value, text: (el.options[j].text || '').trim() });
+         }
+         return { error: 'no_option', available: available, total: el.options.length };
+       }
+       el.dispatchEvent(new Event('input', { bubbles: true }));
+       el.dispatchEvent(new Event('change', { bubbles: true }));
+       return { selected: chosen };`
+    );
+    if (result?.error === 'no_match') return { ok: false, error: `No element matches ${args.selector}`, tab };
+    if (result?.error === 'not_select') {
+      return {
+        ok: false,
+        error: `Selector ${args.selector} resolves to <${result.tag}>, not <select>. Use fill for a text input, or click for a custom dropdown.`,
+        tab
+      };
+    }
+    if (result?.error === 'no_option') {
+      return {
+        ok: false,
+        error: `No option in ${args.selector} has the value or visible text "${args.option}". Pick one from available, which lists ${result.available.length} of the ${result.total} real options with their value and text.`,
+        available: result.available,
+        total: result.total,
+        tab
+      };
+    }
+    return { ok: true, ...result, tab };
+  },
+
+  press_key: async (args) => {
+    const { result, tab } = await runPage(
+      args,
+      `var sel = ${JSON.stringify(args.selector || null)};
+       var el = sel ? A.one(sel, 0, ${matchOpts(args)}) : (document.activeElement || document.body);
+       if (!el) return { error: 'no_match' };
+       A.key(el, ${JSON.stringify(args.key)});
+       // Identity only: a full describe of a fallback document.body would drag
+       // the page's entire innerText into the response.
+       var target = { tag: el.tagName.toLowerCase() };
+       var names = ['id', 'name', 'type', 'aria-label'];
+       for (var i = 0; i < names.length; i++) {
+         var v = el.getAttribute(names[i]);
+         if (v) target[names[i]] = v.slice(0, ${TARGET_ATTR_CHARS});
+       }
+       return { key: ${JSON.stringify(args.key)}, target: target, usedFocusedElement: !sel };`
+    );
+    if (result?.error === 'no_match') {
+      // Without a selector the miss means the document had nothing to aim at.
+      const why = args.selector
+        ? `No element matches ${args.selector}`
+        : 'The page has no focused element and no body to fall back to.';
+      return { ok: false, error: why, tab };
+    }
+    return { ok: true, ...result, tab };
+  },
+
+  scroll: async (args) => {
+    const { result, tab } = await runPage(
+      args,
+      `var sel = ${JSON.stringify(args.selector || null)};
+       if (sel) {
+         var el = A.one(sel, 0, ${matchOpts(args)});
+         if (!el) return { error: 'no_match' };
+         el.scrollIntoView({ block: 'center' });
+         return { scrolledTo: A.describe(el, ${verboseFlag(args)}) };
+       }
+       var dir = ${JSON.stringify(args.direction || 'down')};
+       var amount = ${args.amount ?? DEFAULT_SCROLL_PX};
+       if (dir === 'top') window.scrollTo(0, 0);
+       else if (dir === 'bottom') window.scrollTo(0, document.body.scrollHeight);
+       else window.scrollBy(0, dir === 'up' ? -amount : amount);
+       return { scrollY: window.scrollY, pageHeight: document.body.scrollHeight, viewport: window.innerHeight };`
+    );
+    if (result?.error === 'no_match') return { ok: false, error: `No element matches ${args.selector}`, tab };
+    return { ok: true, ...result, tab };
+  },
+
+  // runPage throws on a page-script failure, and that is left to propagate: a
+  // bad selector is a bad selector on every poll, so retrying it to the
+  // deadline would only turn a clear error into a vague timeout.
+  wait_for_selector: async (args) => {
+    const timeout = args.timeout_ms ?? DEFAULT_WAIT_MS;
+    const want = args.state || 'visible';
+    const started = Date.now();
+    let last = null;
+
+    while (Date.now() - started < timeout) {
+      const { result, tab } = await runPage(
+        args,
+        `var els = A.all(${JSON.stringify(args.selector)}, null, ${matchOpts(args)});
+         var vis = 0;
+         for (var i = 0; i < els.length; i++) if (A.visible(els[i])) vis++;
+         return { count: els.length, visible: vis, first: els[0] ? A.describe(els[0], ${verboseFlag(args)}) : null };`
+      );
+      last = { ...result, tab };
+      const done =
+        (want === 'present' && result.count > 0) ||
+        (want === 'visible' && result.visible > 0) ||
+        (want === 'absent' && result.count === 0);
+      if (done) return { ok: true, state: want, waitedMs: Date.now() - started, ...last };
+      await sleep(POLL_MS);
+    }
+    return {
+      ok: false,
+      timedOut: true,
+      state: want,
+      waitedMs: Date.now() - started,
+      ...last,
+      note: `Selector "${args.selector}" was not ${want} within ${timeout}ms.`
+    };
+  }
+};

@@ -1,0 +1,115 @@
+name: Bug report
+description: Something did not work, or reported success when nothing happened
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most bugs here turn out to be Arc quirks, so the environment and the
+        exact call matter more than usual. Please fill in the versions.
+
+        Security issues: email dhruvbaradiya@gmail.com instead of filing here.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected, and what you got instead.
+      placeholder: |
+        Called go_back on a tab with history. It returned ok: true but the URL
+        never changed.
+    validations:
+      required: true
+
+  - type: input
+    id: tool
+    attributes:
+      label: Which tool
+      placeholder: click
+    validations:
+      required: true
+
+  - type: textarea
+    id: arguments
+    attributes:
+      label: Arguments passed to it
+      description: The full arguments object. Redact anything private.
+      render: json
+      placeholder: |
+        { "selector": "text=Sign in", "nth": 0 }
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: Full error or full response
+      description: >
+        The complete text, not a summary. If the problem is that it succeeded
+        when it should not have, paste the successful response.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "15.3"
+    validations:
+      required: true
+
+  - type: input
+    id: arc
+    attributes:
+      label: Arc version
+      description: Arc > About Arc
+      placeholder: "1.94.0"
+    validations:
+      required: true
+
+  - type: input
+    id: node
+    attributes:
+      label: Node version
+      description: Output of `node --version`
+      placeholder: v22.11.0
+    validations:
+      required: true
+
+  - type: input
+    id: server-version
+    attributes:
+      label: arc-control-mcp version
+      description: Output of `node src/index.js --version`
+      placeholder: 0.3.0
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: permissions
+    attributes:
+      label: Permissions
+      description: Both are needed. See the README if you are not sure.
+      options:
+        - label: Automation access to Arc is granted to the app running the server
+        - label: '"Allow JavaScript from Apple Events" is on in Arc > Settings > Advanced'
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: >
+        A URL that shows it, if the page matters. If you have isolated the raw
+        Arc behaviour (a JXA one-liner, an AppleScript error code such as -1743
+        or -10000), include it.
+    validations:
+      required: false
+
+  - type: input
+    id: client
+    attributes:
+      label: MCP client
+      placeholder: Claude Code
+    validations:
+      required: false
