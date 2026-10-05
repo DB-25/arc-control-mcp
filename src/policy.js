@@ -137,7 +137,9 @@ function violationMessage(violation, subject) {
 // Arguments that carry what the user typed, the code they ran or a full URL
 // (which may hold a token in its query). The audit log must never hold those,
 // and an error message often quotes them back.
-const SECRET_ARGS = ['value', 'text', 'code', 'option', 'url'];
+// A key combination can be a typed password character by character, and a
+// dialog's prompt text is typed input too.
+const SECRET_ARGS = ['value', 'text', 'code', 'option', 'url', 'key', 'prompt_text'];
 
 function secretsOf(args) {
   const out = [];
@@ -152,7 +154,10 @@ function secretsOf(args) {
 // These tools take what the user typed or the code they ran, and a page error
 // quotes fragments of both back ("ReferenceError in fetch(...)"), so no
 // substitution can make their error text safe. They log that they failed, not why.
-const VALUE_TOOLS = new Set(['fill', 'fill_form', 'type', 'select_option', 'execute_javascript', 'trusted_type', 'trusted_press_key', 'upload_file']);
+const VALUE_TOOLS = new Set([
+  'fill', 'fill_form', 'type', 'select_option', 'execute_javascript', 'press_key',
+  'trusted_type', 'trusted_press_key', 'upload_file', 'handle_dialog'
+]);
 const WITHHELD = 'failed; details withheld because this tool handles typed values or script code';
 
 const AUDIT_ERROR_CHARS = 300;

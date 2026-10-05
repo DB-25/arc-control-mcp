@@ -299,6 +299,22 @@ describe('audit log', () => {
     assert.deepEqual(Object.keys(h.audit[0]).sort(), ['error', 'ok', 'origin', 'tab', 'time', 'tool']);
   });
 
+  it('withholds the error of key presses and dialog answers, which can carry typed input', async () => {
+    const h = harness({ ARC_MCP_AUDIT_LOG: '/dev/null' }, { t: 'https://example.com/' });
+    for (const name of ['press_key', 'trusted_press_key', 'handle_dialog']) {
+      const wrapped = h.wrap(tool(name, WRITE), { ok: false, error: 'Unknown key "hunter2" / prompt "pw-9" failed' });
+      await wrapped({ tab_id: 't', key: 'hunter2', prompt_text: 'pw-9', action: 'accept' });
+    }
+    assert.equal(h.audit.length, 3);
+    for (const entry of h.audit) assert.match(entry.error, /details withheld/, entry.tool);
+    assert.ok(!JSON.stringify(h.audit).includes('hunter2'));
+    assert.ok(!JSON.stringify(h.audit).includes('pw-9'));
+  });
+
+  it('scrub also removes key and prompt_text', () => {
+    assert.equal(scrub('pressed Meta+Secret then typed pw-9', { key: 'Meta+Secret', prompt_text: 'pw-9' }), 'pressed [redacted] then typed [redacted]');
+  });
+
   it('scrub removes every secret argument and caps the length', () => {
     assert.equal(scrub('typed abc into the box', { text: 'abc' }), 'typed [redacted] into the box');
     assert.ok(scrub('x'.repeat(1000), {}).length < 400);
