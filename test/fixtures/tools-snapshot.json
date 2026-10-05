@@ -903,5 +903,177 @@
       "idempotentHint": false,
       "openWorldHint": true
     }
+  },
+  {
+    "name": "sidebar_tree",
+    "title": "Sidebar Tree",
+    "description": "Read Arc's sidebar from its own data file: every space with its pinned items (folders nested) and unpinned tabs, plus the top-app favourites. Gives what list_tabs cannot (pinned versus unpinned, folders, when each tab was last active) in milliseconds, without driving Arc. Each tab's id is the tab_id list_tabs reports, so it can be passed to other tools. Arc writes the file periodically, so recent changes may be missing: see asOf. Pass match_live to check each tab against Arc's open tabs.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "space": {
+          "type": "string",
+          "description": "Only this space, by id or title from list_spaces"
+        },
+        "max_items": {
+          "default": 200,
+          "description": "Maximum tabs to return. Capped at 2000.",
+          "type": "number",
+          "minimum": 1,
+          "maximum": 2000
+        },
+        "include_urls": {
+          "default": true,
+          "description": "Include each tab's url. Turn off for a smaller, less sensitive result.",
+          "type": "boolean"
+        },
+        "match_live": {
+          "default": false,
+          "description": "Also ask Arc which tabs are open and mark each one live: true or false. Costs an Apple Events call and needs Arc running.",
+          "type": "boolean"
+        }
+      }
+    },
+    "annotations": {
+      "title": "Sidebar Tree",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "find_stale_tabs",
+    "title": "Find Stale Tabs",
+    "description": "Find tabs the user has not touched for a number of days, oldest first, with their space and whether they are pinned, unpinned or a top app. Also reports exact duplicate URLs across the whole sidebar. Read from Arc's own data file, so it needs no Apple Events. To act on a result, pass its id to close_tab.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "days": {
+          "default": 7,
+          "description": "Idle for at least this many days",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3650
+        },
+        "space": {
+          "type": "string",
+          "description": "Only this space, by id or title from list_spaces"
+        },
+        "limit": {
+          "default": 50,
+          "description": "Maximum stale tabs to return. Capped at 500.",
+          "type": "number",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "include_duplicates": {
+          "default": true,
+          "description": "Also report URLs open in more than one tab",
+          "type": "boolean"
+        }
+      }
+    },
+    "annotations": {
+      "title": "Find Stale Tabs",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "search_archive",
+    "title": "Search Archive",
+    "description": "Search tabs Arc archived or the user closed (the sidebar's Archive), by text in the title or url, newest first. Every word in query must match. Read from Arc's own data file. Use reason 'auto' to see only what Arc archived on its own.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "default": "",
+          "type": "string",
+          "description": "Words to find in the title or url, case-insensitive. Empty lists the newest archived tabs."
+        },
+        "reason": {
+          "default": "any",
+          "description": "'auto' is archived by Arc after inactivity, 'manual' is closed by the user",
+          "type": "string",
+          "enum": [
+            "any",
+            "auto",
+            "manual"
+          ]
+        },
+        "since_days": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3650,
+          "description": "Only tabs archived within this many days"
+        },
+        "limit": {
+          "default": 25,
+          "description": "Maximum archived tabs to return. Capped at 500.",
+          "type": "number",
+          "minimum": 1,
+          "maximum": 500
+        }
+      }
+    },
+    "annotations": {
+      "title": "Search Archive",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "search_history",
+    "title": "Search History",
+    "description": "Search Arc's browsing history (pages visited, with visit counts and last visit time) by text in the title or url, newest first. Browsing history is sensitive, so this is OFF unless the server was started with ARC_MCP_ALLOW_HISTORY=1; otherwise it returns ok: false saying how to enable it. Every word in query must match.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "default": "",
+          "type": "string",
+          "description": "Words to find in the title or url, case-insensitive. Empty lists the most recent pages."
+        },
+        "since_days": {
+          "default": 30,
+          "description": "Window start, in days ago",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3650
+        },
+        "until_days": {
+          "default": 0,
+          "description": "Window end, in days ago. 0 means now.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 3650
+        },
+        "limit": {
+          "default": 25,
+          "description": "Maximum pages to return. Capped at 500.",
+          "type": "number",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "profile": {
+          "default": "Default",
+          "description": "The Arc profile folder under \"User Data\"",
+          "type": "string",
+          "pattern": "^(?!\\.+$)[A-Za-z0-9 _.-]+$"
+        }
+      }
+    },
+    "annotations": {
+      "title": "Search History",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
   }
 ]

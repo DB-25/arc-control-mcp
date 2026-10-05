@@ -39,6 +39,9 @@ const ARC_METADATA_TOOLS = [
   'focus_space'
 ];
 
+// Tools that read Arc's own data files and never touch a page or Arc itself.
+const LOCAL_DATA_TOOLS = ['sidebar_tree', 'find_stale_tabs', 'search_archive', 'search_history'];
+
 describe('destructive hints match what the tool can actually do', () => {
   for (const name of SCRIPTING_TOOLS) {
     it(`${name} admits it is destructive, since arbitrary code can submit or delete anything`, () => {
@@ -79,10 +82,24 @@ describe('openWorldHint marks the tools that touch untrusted pages', () => {
     const closedWorld = TOOLS.filter((tool) => !tool.annotations.openWorldHint).map((tool) => tool.name);
     assert.deepEqual(
       closedWorld.sort(),
-      [...ARC_METADATA_TOOLS].sort(),
+      [...ARC_METADATA_TOOLS, ...LOCAL_DATA_TOOLS].sort(),
       'a tool that reads page content must not be marked closed-world'
     );
   });
+});
+
+describe('local data tools only read', () => {
+  for (const name of LOCAL_DATA_TOOLS) {
+    it(`${name} is read-only, non-destructive, idempotent and closed-world`, () => {
+      assert.deepEqual(hints(name), {
+        title: hints(name).title,
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false
+      });
+    });
+  }
 });
 
 describe('every tool carries a display title', () => {
