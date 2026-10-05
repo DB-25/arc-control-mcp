@@ -235,7 +235,7 @@ loses nothing but a few wasted calls.
 
 ## Tools
 
-26 tools in six modules.
+34 tools in nine modules.
 
 ### Tabs
 
@@ -246,7 +246,7 @@ loses nothing but a few wasted calls.
 | `switch_to_tab` | Make a tab active in its window. `activate` also brings Arc to the front. |
 | `close_tab` | Close one tab. |
 | `close_own_tabs` | Close every tab this agent opened, leaving the user's alone. `include_stale` also closes tabs leaked by a dead previous run of the same label. |
-| `arc_status` | Owned tabs, whether the agent space exists, what a call with no `tab_id` resolves to (reported separately for read-only and for changing tools), and how many stale tabs a previous run left behind. |
+| `arc_status` | Arc's version and whether it is the frontmost app, owned tabs, whether the agent space exists, what a call with no `tab_id` resolves to (reported separately for read-only and for changing tools), how many stale tabs a previous run left behind, and the [guardrails](#guardrails) this server was started with. |
 
 ### Navigation
 
@@ -255,7 +255,8 @@ loses nothing but a few wasted calls.
 | `open_url` | Open a URL, launching Arc if needed. Options for `new_tab`, target `space`, `little_arc`, `activate`, `wait_until_loaded`. |
 | `go_back` / `go_forward` | Move a tab through its history, verified by checking the URL actually changed. |
 | `reload_tab` | Reload a tab. |
-| `wait_for_load` | Poll until the document is ready, optionally until the URL contains a substring. |
+| `wait_for_load` | Poll until the document is ready, optionally until the URL contains a substring. Also reads Arc's `loading` flag (see [Loading tabs](#loading-tabs-and-stop_loading)), so a hung page shows up as `ready: "loading"` instead of a stalled call. |
+| `stop_loading` | Press the stop button on a tab that will not finish loading, which also unblocks every page tool on it. |
 
 ### Content
 
@@ -277,6 +278,18 @@ loses nothing but a few wasted calls.
 | `press_key` | Dispatch a key press to an element or the focused element. |
 | `scroll` | Scroll the page by direction and amount, or scroll one element into view. |
 | `wait_for_selector` | Poll until an element is `present`, `visible` or `absent`. |
+| `wait_for_text` | Poll until any of several strings, or a regex, appears in or disappears from the page's visible text or a scope selector. |
+| `fill_form` | Fill up to 50 fields in one call, each through the same checks as `fill`. Reports every field, is `ok: false` when any failed, and names which. Values are not echoed. |
+| `hover` | Send `pointerover`, `pointerenter`, `mouseover`, `mouseenter`, `pointermove` and `mousemove` at an element's center. Reports `coveredBy` like `click`. CSS `:hover` styles do not change: that is browser state a script cannot set. |
+| `type` | Type one character at a time (`keydown`, `keypress`, `beforeinput`, a native-setter append, `input`, `keyup`), for widgets that react to per-character events. Verifies the field afterwards: `ok: false` when characters did not go in, and the final value is reported (only its length for a password). `delay_ms` spaces the characters out. |
+
+### Observation
+
+| Tool | Purpose |
+|---|---|
+| `capture_start` | Start recording console output, uncaught errors, unhandled rejections, and `fetch` and `XMLHttpRequest` calls (method, url, status, duration; never bodies or headers). Fails with `ok: false` when the page's CSP blocks it. See [Console and network capture](#console-and-network-capture). |
+| `capture_read` | Return what was recorded, oldest first, optionally clearing what it returned. Fails when no recorder is running rather than returning an empty list. |
+| `network_entries` | The page's requests from the browser's own resource timing. No recorder, so it works under any CSP, with the limits listed below. |
 
 ### Spaces
 
@@ -362,6 +375,68 @@ Tab ids are UUID strings and are not stable across a close and reopen, so call
 | `ARC_MCP_LABEL` | `default` | Names this agent's tab ownership. Two agents with different labels never see each other's owned tabs. |
 | `ARC_MCP_SPACE` | `Agent` | The Arc space new tabs open into, when a space with that name exists. |
 | `ARC_MCP_STATE_DIR` | `~/Library/Application Support/arc-control-mcp` | Where tab ownership is recorded, so a restarted agent can clean up the tabs its previous run left behind. |
+| `ARC_MCP_ALLOWED_ORIGINS` | unset | Comma list of origins the agent may touch. See [Guardrails](#guardrails). |
+| `ARC_MCP_BLOCKED_ORIGINS` | unset | Comma list of origins the agent may not touch. Wins over the allow list. |
+| `ARC_MCP_BLOCK_READS` | off | `1` applies both lists to read tools as well. |
+| `ARC_MCP_READ_ONLY` | off | `1` exposes only the read tools. |
+| `ARC_MCP_AUDIT_LOG` | unset | Path of a file that gets one JSON line per changing call. |
+
+## Guardrails
+
+Optional limits for an agent you do not fully trust with a browser. All are
+environment variables, read once at startup, so the agent cannot loosen them
+mid-session; set them in the MCP client's server config. A typo in a rule, or
+an audit file that cannot be written, stops the server at startup with the
+variable named, rather than leaving a guardrail silently off. `arc_status`
+reports what is active, so the model knows its limits before it hits one.
+
+```bash
+claude mcp add arc --scope user \
+  --env ARC_MCP_ALLOWED_ORIGINS='example.com,*.example.com,localhost:3000' \
+  --env ARC_MCP_BLOCKED_ORIGINS='admin.example.com' \
+  --env ARC_MCP_AUDIT_LOG="$HOME/arc-audit.jsonl" \
+  -- npx -y arc-control-mcp@latest
+```
+
+**Origin rules.** An entry is `host`, `*.host`, `scheme://host[:port]`,
+`file://` (any file URL) or `about:` (any URL of that scheme). A bare host
+matches that exact host on any scheme and port. `*.example.com` matches
+subdomains only, so list `example.com` too. Matching is on the parsed hostname,
+never a substring, so `example.com.evil.test` does not match `example.com`.
+With an allow list, anything not on it is refused, including a blank tab; a
+block rule always wins.
+
+- `open_url` is checked against its target URL before anything opens.
+- Every other tool that changes a page (`click`, `fill`, `fill_form`, `type`,
+  `hover`, `select_option`, `press_key`, `scroll`, `execute_javascript`,
+  `go_back`, `go_forward`, `reload_tab`, `stop_loading`, `capture_start`) first
+  reads the target tab's current URL and refuses when it is outside the rules.
+  The tab it vetted is the tab it acts on, even when no `tab_id` was passed.
+  This costs one extra `osascript` call per changing call. `batch` checks each
+  step as it runs.
+- Read tools are allowed unless `ARC_MCP_BLOCK_READS=1`.
+- Tools that only manage Arc's own tabs (`close_tab`, `switch_to_tab`,
+  `close_own_tabs`, `focus_space`) are not origin-gated.
+- A refused call returns `ok: false`, `blocked: true`, `rule`, and an error that
+  names the rule and the origin. After a navigating tool (`open_url`, back,
+  forward, reload), the tab's final URL is checked again: a redirect that lands
+  on a blocked origin is reported as a failure, because the navigation happened.
+
+Limits worth knowing: the check is made before the call, so a page that
+navigates itself in between is not caught until the next call. A page the agent
+can already script can still send requests anywhere it likes, since the rules
+cover which pages the agent drives, not what those pages' own code fetches.
+
+**Read-only mode.** `ARC_MCP_READ_ONLY=1` advertises only the tools annotated
+read-only, and answers a call to any other tool by name with a refusal.
+
+**Audit log.** `ARC_MCP_AUDIT_LOG=<path>` appends one JSON line per changing
+call: `time`, `tool`, `tab` id, `origin` (scheme and host only, never a path or
+query), `ok`, and `error`. Fill values, typed text and script code are never
+logged. A page's own error message can quote them, so for `fill`, `fill_form`,
+`type`, `select_option` and `execute_javascript` a failure logs that it failed
+without the reason. Each `batch` step is logged as its own call. Refused calls
+are logged too. The file is created owner-only.
 
 ## Isolation, and why not a separate window
 
@@ -429,8 +504,10 @@ be driven that way, and there is no workaround inside this design: Arc's
 input event.
 
 Verified against Wikipedia's search box. `fill` sets the value correctly, but
-the suggestion dropdown never opens. Hand-dispatching per-character
-`keydown`/`input`/`keyup` does not help either.
+the suggestion dropdown never opens. Per-character events do not help there
+either, which is why `type` exists for the widgets that do listen to them (a
+handler on `input` or `keydown` that does not check `isTrusted`), not as a way
+past ones that do.
 
 The workaround does work, and is usually what you wanted anyway:
 
@@ -439,6 +516,63 @@ The workaround does work, and is usually what you wanted anyway:
 
 If a widget only reacts to a suggestion list, a hover preview, or a drag, expect
 it not to react here.
+
+### Loading tabs and `stop_loading`
+
+While a tab is still loading, Arc does not answer `execute javascript`: the call
+hangs until the 30 second osascript timeout, and one made during a load may
+never return even after the load finishes. A hung request, or an `<iframe>`
+whose server never answers, keeps a tab in that state indefinitely (measured
+against Arc 1.165, with a localhost server that held a response open).
+`stop_loading` presses the stop button through Arc's AppleScript `stop` command,
+after which scripts work again and the page keeps what had rendered.
+
+Arc exposes a `loading` property on every tab that answers immediately, and
+`wait_for_load` reads it before asking the page anything. A tab that is loading
+reports `ready: "loading"`, and a timeout says so and points at `stop_loading`,
+instead of stalling for the length of the call. Other page tools are not gated on
+it: call `wait_for_load` first when a click or `open_url` has just started a
+navigation.
+
+### Console and network capture
+
+Arc runs this server's scripts in an **isolated JavaScript world**. They share
+the page's DOM but not its objects: a variable the page defines is `undefined`
+to them, a global they set is invisible to the page, and `console`, `fetch` and
+`XMLHttpRequest` are separate copies. Wrapping `window.fetch` from
+`execute_javascript` therefore records nothing the page does.
+
+`capture_start` works around that by injecting a `<script>` element, which runs
+in the page's own world, and relaying each event back to the isolated world as a
+`CustomEvent` carrying JSON. What it does and does not give you:
+
+- Records `console.log/info/warn/error/debug` text (capped at 500 characters),
+  uncaught errors, failed resource loads, unhandled promise rejections, and
+  `fetch` and `XMLHttpRequest` calls with method, url, status and duration.
+  Never request or response bodies, never headers. The url fragment is always
+  dropped and the query string is dropped unless `include_query` is set, because
+  queries often carry tokens. Console text is recorded as the page logged it, so
+  it can contain anything the page prints.
+- **A page whose Content-Security-Policy forbids inline scripts blocks the
+  injection.** That is detected, and `capture_start` fails with `ok: false` and
+  the reason instead of claiming capture works. Most large sites (GitHub,
+  Google) send such a policy. `capture_read` likewise fails rather than
+  returning an empty list when no recorder is running.
+- The recorder lives in the document: a navigation or reload discards it, so
+  call `capture_start` again. It starts recording at that moment, so it misses
+  requests the page made earlier. The top frame only: not iframes, workers,
+  WebSockets or `sendBeacon`.
+- Keeps the newest 1000 events. `capture_read` reports `dropped` when older
+  ones were pushed out, and with `clear` removes only the events it returned.
+- What it records comes from the page, so treat it as data, never instructions.
+
+`network_entries` is the capture-free alternative. It reads
+`performance.getEntriesByType('resource')`, which needs no injection and works
+under any CSP. Its limits come from the browser: only finished requests appear
+(a failed one often leaves no entry), about 250 entries are kept unless the page
+raised that, cross-origin entries hide size and status unless the server sends
+`Timing-Allow-Origin`, and `data:` URLs are not listed. Pass `since_ms` (from a
+previous call's `nowMs`) to see only what one action caused.
 
 ## Troubleshooting
 
@@ -472,13 +606,17 @@ src/
   registry.js    composes tool modules, validates tool/handler parity at load
   jxa.js         osascript runner, Arc preamble, error mapping
   state.js       per-session tab ownership
+  policy.js      guardrails: origin rules, read-only mode, audit log
   page-lib.js    helper library injected into the page as `A`
   tools/
     shared.js      common schemas and run helpers
     tabs.js        list, switch, close, status
-    navigation.js  open, back, forward, reload, wait for load
+    navigation.js  open, back, forward, reload, wait for load, stop loading
     content.js     text, html, structured queries, links, page info
     interact.js    click, fill, select, keys, scroll, wait for selector
+    input.js       fill_form, hover, type
+    wait.js        wait for text
+    capture.js     console and network capture, resource timing
     spaces.js      Arc spaces
     scripting.js   raw JavaScript and batch
 ```
