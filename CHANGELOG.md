@@ -5,6 +5,54 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- A dedicated agent window. `open_url` now opens new tabs in one separate Arc
+  window instead of the user's own, so the user keeps working in theirs.
+  `ARC_MCP_WINDOW=dedicated` is the default; `space` keeps the old behaviour.
+- At most one agent window, ever. Its id is stored in the shared state
+  directory and found or created under a cross-process lock, and a new one is
+  made only when the stored window is truly gone: a minimized window, or one
+  Arc reports as `visible: false`, counts as present. Tested with concurrent
+  callers against a fake Arc.
+- `ARC_MCP_WINDOW_PLACEMENT` (`auto`, `second-display`, `minimized`, `none`).
+  `auto` uses the largest non-main display and otherwise leaves the window where
+  Arc puts it. `minimized` is experimental and not a default.
+- Focus protection: with Accessibility, the server records which window had
+  focus before a window or tab is created and puts it back, reporting
+  `focusRestored`. Without it there is no placement and no restore, and a
+  one-time `accessibilityNote` says how to grant it (errors -1719 and -25211
+  are mapped to it).
+- The user-activity gate. Before anything that can change what is on screen or
+  which window has focus (`open_url` with a new tab, `little_arc` or `activate`,
+  `switch_to_tab`, `focus_space`, creating or moving the agent window, and the
+  focus restore), the server waits until the user has been idle for
+  `ARC_MCP_IDLE_MS` (1500 ms), polling for up to `ARC_MCP_IDLE_WAIT_MS` (15 s).
+  If the user never pauses the tool fails with `ok: false, userActive: true`;
+  otherwise it reports `waitedForUserMs`. Reads, page scripting and history are
+  never gated. `ARC_MCP_IDLE_MS=0` disables it. Idle time comes from
+  `ioreg -c IOHIDSystem` and needs no permission.
+- `arc_status` reports the agent window (id, placement, display, minimized),
+  whether Accessibility is available, and the current user idle time.
+- `list_tabs` rows carry `inAgentWindow`.
+
+### Changed
+
+- `isActive` is never set on a tab of the agent window, so a read-only tool with
+  no `tab_id` cannot fall back to an agent tab as if it were the user's.
+- A tab this agent opened is looked up through the agent window first, so
+  selecting or closing it never goes through the user's window.
+- `arc_status` and every read tool never launch Arc.
+
+### Known limits
+
+- Without Accessibility a minimized agent window cannot be told from a closed
+  one, so a closed window is not recreated until Accessibility is granted or the
+  `agent-window.json` file in the state directory is deleted.
+- `ARC_MCP_WINDOW_PLACEMENT=minimized` has not been verified live.
+
 ## [0.3.1] - 2026-10-05
 
 The 0.3.0 theme continued: three more ways a call could report success for
