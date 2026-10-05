@@ -30,3 +30,6 @@ state/
 # Environment and local overrides
 .env
 .env.*
+
+# Throwaway live-check scripts, never shipped
+scripts/.tmp-*
