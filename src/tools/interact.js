@@ -148,7 +148,7 @@ export const tools = [
     input: z.object({
       tab_id: TAB_ID.optional(),
       selector: SELECTOR.describe(
-        'Scroll this element into view instead of scrolling the page. CSS selector, or "text=Label" (substring, exact matches ranked first).'
+        'Scroll this element into view instead of scrolling the page. CSS selector, "text=Label" (substring, exact matches ranked first), "ref=e12", "role=button[name="Save"]", "label=Email" or "placeholder=Search".'
       ).optional(),
       direction: z.enum(['down', 'up', 'top', 'bottom']).default('down').describe('Page scroll direction'),
       amount: z.number().default(DEFAULT_SCROLL_PX).describe('Pixels to scroll for up and down'),

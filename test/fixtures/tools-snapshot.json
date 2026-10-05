@@ -718,7 +718,7 @@
         },
         "selector": {
           "type": "string",
-          "description": "Scroll this element into view instead of scrolling the page. CSS selector, or \"text=Label\" (substring, exact matches ranked first)."
+          "description": "Scroll this element into view instead of scrolling the page. CSS selector, \"text=Label\" (substring, exact matches ranked first), \"ref=e12\", \"role=button[name=\"Save\"]\", \"label=Email\" or \"placeholder=Search\"."
         },
         "direction": {
           "default": "down",
