@@ -64,8 +64,8 @@ setTimeout(function () {
 
 let formUrl = null;
 
-async function withTab(url, body) {
-  const opened = await tool.open_url({ url, activate: false });
+async function withTab(url, body, { wait = true } = {}) {
+  const opened = await tool.open_url({ url, activate: false, wait_until_loaded: wait });
   try {
     return await body(opened.tab.id, opened);
   } finally {
@@ -250,5 +250,85 @@ describe('integration: interaction tools', () => {
       if (typed.ok) assert.equal(typed.value, 'xyz');
       else assert.match(typed.error, /Stopped after \d+ of 3 characters/);
     });
+  });
+});
+
+// A loopback server with one endpoint that never answers and one that answers
+// late, so "still loading" is a real state Arc is in rather than a mock.
+const SLOW_MS = 3000;
+let server = null;
+let origin = null;
+
+describe('integration: loading state', () => {
+  before(async () => {
+    if (REASON) return;
+    server = createServer((req, res) => {
+      if (req.url.startsWith('/hang')) return; // never answers
+      if (req.url.startsWith('/slow')) {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        setTimeout(() => res.end('<!doctype html><title>slow page</title><p>arrived</p>'), SLOW_MS);
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    origin = `http://127.0.0.1:${server.address().port}`;
+    const frame = join(fixtureDir, 'frame.html');
+    writeFileSync(frame, `<!doctype html><title>frame host</title><p>host</p><iframe src="${origin}/hang"></iframe>`);
+    frameUrl = pathToFileURL(frame).href;
+  });
+
+  after(async () => {
+    if (REASON) return;
+    server.closeAllConnections?.();
+    await new Promise((resolve) => server.close(resolve));
+    await tool.close_own_tabs({});
+  });
+
+  let frameUrl = null;
+
+  it('wait_for_load reports a page that is still loading, and stop_loading unblocks it', { skip }, async () => {
+    // wait_until_loaded false: this call must not itself sit waiting on the hung frame.
+    await withTab(frameUrl, async (tabId) => {
+      const stuck = await tool.wait_for_load({ tab_id: tabId, timeout_ms: 3000 });
+      assert.equal(stuck.ok, false);
+      assert.equal(stuck.timedOut, true);
+      assert.equal(stuck.ready, 'loading', 'the loading flag, not a stalled probe, explains the timeout');
+      assert.match(stuck.note, /stop_loading/);
+      assert.ok(stuck.waitedMs < 8000, `the wait took ${stuck.waitedMs}ms, so it stalled instead of polling`);
+
+      const stopped = await tool.stop_loading({ tab_id: tabId });
+      assert.equal(stopped.ok, true, stopped.error);
+      assert.equal(stopped.wasLoading, true);
+      assert.equal(stopped.loading, false);
+
+      // The page answers again, and what had rendered is still there.
+      const ready = await tool.wait_for_load({ tab_id: tabId, timeout_ms: 5000 });
+      assert.equal(ready.ok, true);
+      assert.equal(ready.ready, 'complete');
+      const text = await tool.get_page_content({ tab_id: tabId });
+      assert.match(text.text, /host/);
+    }, { wait: false });
+  });
+
+  it('stop_loading on a tab that is not loading says so and succeeds', { skip }, async () => {
+    await withTab(formUrl, async (tabId) => {
+      const result = await tool.stop_loading({ tab_id: tabId });
+      assert.equal(result.ok, true);
+      assert.equal(result.wasLoading, false);
+      assert.match(result.note, /nothing to stop/);
+    });
+  });
+
+  it('wait_for_load waits out a genuinely slow page and then reports it complete', { skip }, async () => {
+    await withTab(`${origin}/slow`, async (tabId) => {
+      const started = Date.now();
+      const ready = await tool.wait_for_load({ tab_id: tabId, timeout_ms: 15000 });
+      assert.equal(ready.ok, true, ready.note);
+      assert.equal(ready.ready, 'complete');
+      assert.ok(Date.now() - started < 12000);
+      const text = await tool.get_page_content({ tab_id: tabId });
+      assert.match(text.text, /arrived/);
+    }, { wait: false });
   });
 });
