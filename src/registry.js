@@ -1,6 +1,7 @@
 import { toJSONSchema } from 'zod';
 
 import { ArcError } from './jxa.js';
+import { gateTool, withGate } from './user-activity.js';
 import * as tabs from './tools/tabs.js';
 import * as navigation from './tools/navigation.js';
 import * as content from './tools/content.js';
@@ -72,7 +73,13 @@ function wrap(tool, handler) {
       // surfaces as an isError result the model can read and correct.
       throw new ArcError(`Invalid arguments for ${tool.name}. ${readableIssues(parsed.error)}`);
     }
-    return handler({ ...parsed.data, __allowActiveTab: allowActiveTab }, extra);
+    // Held back until the user pauses, for the tools that change what is on
+    // screen or which window has focus. In batch too, since a step reaches its
+    // handler through here. Reads and page scripting never wait.
+    const gate = await gateTool(tool.name, parsed.data);
+    if (!gate.proceed) return gate.result;
+    const result = await handler({ ...parsed.data, __allowActiveTab: allowActiveTab }, extra);
+    return withGate(result, gate);
   };
 }
 
