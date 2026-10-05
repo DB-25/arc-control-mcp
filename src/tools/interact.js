@@ -1,6 +1,7 @@
 import { ArcError } from '../jxa.js';
-import { z, TAB_ID, SELECTOR, VERBOSE, EXACT, NTH, timeoutMs, MAX_CALLER_TIMEOUT_MS } from './schema.js';
+import { z, TAB_ID, SELECTOR, VERBOSE, EXACT, NTH, SETTLE_MS, timeoutMs, MAX_CALLER_TIMEOUT_MS } from './schema.js';
 import { write, read, runPage, sleep } from './shared.js';
+import { quietMs, watchStart, settle } from './settle.js';
 
 const POLL_MS = 250;
 const DEFAULT_WAIT_MS = 10000;
@@ -18,12 +19,23 @@ const TARGET_ATTR_CHARS = 80;
 // advertised: the "no effect on CSS selectors" half is what stops a model
 // passing it blind and then wondering why nothing changed.
 const MATCH_EXACT = EXACT.describe(
-  'For "text=" selectors, require the whole trimmed text to equal the label instead of containing it. No effect on CSS selectors.'
+  'For "text=", "label=" and "placeholder=" selectors, require the whole trimmed text to equal the label instead of containing it. No effect on CSS, ref= or role= selectors.'
 );
 
 // Both are interpolated straight into page scripts, so they have to be literals.
 const matchOpts = (args) => JSON.stringify({ exact: args.exact === true });
 const verboseFlag = (args) => String(args.verbose === true);
+
+// A ref that cannot be found is not a "no match": the caller needs to know it
+// is stale and that a new snapshot is the fix. wait_for_selector asks for the
+// soft form because an absent or not-yet-back element is a legitimate answer.
+const softOpts = (args) => JSON.stringify({ exact: args.exact === true, soft: true });
+
+/** Settle the DOM after a successful action and fold the outcome into its result. */
+async function withSettle(args, result, tab) {
+  const { watch, ...rest } = result;
+  return { ok: true, ...rest, ...(await settle(tab, watch, quietMs(args))), tab };
+}
 
 /**
  * The spec asks a receiver of notifications/cancelled to stop work and release
@@ -50,7 +62,11 @@ function disabledHint(isHidden) {
 
 const TEXT_NOTE =
   '"text=Label" matches on visible text as a substring, with exact matches ranked first and visible elements ahead of hidden ones, so a short label also matches longer ones. ' +
-  'Check the returned "matches" count, and pass exact when it is above 1.';
+  'Check the returned "matches" count, and pass exact when it is above 1. ' +
+  'Also accepts "ref=e12" from snapshot (re-resolved and reported as reResolved when the page re-rendered, a clear stale-ref failure when the element is truly gone), "role=button[name=\"Save\"]", "label=Email" and "placeholder=Search".';
+
+const SETTLE_NOTE =
+  ' On success it waits for the page to go quiet and reports settledMs (and settled false if the DOM was still changing at the cap), so the next read sees the result of the action.';
 
 export const tools = [
   {
@@ -60,12 +76,14 @@ export const tools = [
       TEXT_NOTE +
       ' Returns urlBefore, the url as it was immediately before the click: the tab snapshot can be taken before a navigation settles, so follow with wait_for_load when the click navigates.' +
       ' A match inside a control (a label span in a button) is checked against that control, returned as "control": a disabled one fails with ok false and nothing is clicked.' +
-      ' When another element (a modal backdrop, an overlay) covers the target, or it has pointer-events none, the click still goes through but the result carries coveredBy and a warning.',
+      ' When another element (a modal backdrop, an overlay) covers the target, or it has pointer-events none, the click still goes through but the result carries coveredBy and a warning.' +
+      SETTLE_NOTE,
     input: z.object({
       selector: SELECTOR,
       tab_id: TAB_ID.optional(),
       nth: NTH.describe('Which match to click when several exist, 0-based. For text= selectors the order is exact matches first, then substring matches, visible before hidden within each, then DOM order.'),
       exact: MATCH_EXACT,
+      settle_ms: SETTLE_MS,
       verbose: VERBOSE
     }),
     annotations: write('Click')
@@ -75,7 +93,8 @@ export const tools = [
     description:
       'Set the value of an input, textarea or contenteditable. Uses the native setter and fires input and change, so React and similar frameworks register it. ' +
       'Fails with an error naming the tag when the target cannot be filled: a heading or other non-input, a disabled or readonly field, a checkbox, radio or button (use click), a <select> (use select_option), or a field that rejects the value (a number input given text). ' +
-      TEXT_NOTE,
+      TEXT_NOTE +
+      SETTLE_NOTE,
     input: z.object({
       selector: SELECTOR,
       value: z.string().describe('Value to set'),
@@ -88,6 +107,7 @@ export const tools = [
           'Press Enter, then submit the form if the page did not. Fails with ok false when nothing was submitted, or when the form fails its own validation (the invalid fields are listed). The tab usually navigates, so follow with wait_for_load: the returned tab snapshot may predate the navigation, and urlBefore reports the url from just before the key press.'
         ),
       exact: MATCH_EXACT,
+      settle_ms: SETTLE_MS,
       verbose: VERBOSE
     }),
     annotations: write('Fill Field')
@@ -96,11 +116,13 @@ export const tools = [
     name: 'select_option',
     description:
       'Choose an option in a select element, by exact option value or exact visible label. A disabled select or option fails rather than being set. ' +
-      'When nothing matches, the failure lists the options that do exist, so the next call can pick a real one.',
+      'When nothing matches, the failure lists the options that do exist, so the next call can pick a real one.' +
+      SETTLE_NOTE,
     input: z.object({
-      selector: SELECTOR.describe('CSS selector for the <select>. "text=" cannot reach a select element, so use a CSS selector here.'),
+      selector: SELECTOR.describe('CSS selector, ref=e12 or role=combobox[name="Country"] for the <select>. "text=" cannot reach a select element.'),
       option: z.string().describe('Option value or visible text, matched exactly after trimming'),
-      tab_id: TAB_ID.optional()
+      tab_id: TAB_ID.optional(),
+      settle_ms: SETTLE_MS
     }),
     annotations: write('Select Option')
   },
@@ -109,12 +131,14 @@ export const tools = [
     description:
       'Dispatch a key press to an element, or to the focused element when no selector is given. Handles named keys (Enter, Escape, Tab, ArrowDown) and single printable characters; an unknown name fails. ' +
       'Only the page\'s own key handlers react: a synthetic key types no character, moves no focus and submits no form. defaultPrevented says whether a handler took it. To type, use fill. ' +
-      'Returns only a minimal identity for the element that received the key (tag plus whichever of id, name, type and aria-label exist); use query_elements when you need the full picture.',
+      'Returns only a minimal identity for the element that received the key (tag plus whichever of id, name, type and aria-label exist); use query_elements when you need the full picture.' +
+      SETTLE_NOTE,
     input: z.object({
       key: z.string().describe('Key name, for example Enter, Escape, Tab, ArrowDown, or a single printable character'),
       selector: SELECTOR.optional(),
       tab_id: TAB_ID.optional(),
-      exact: MATCH_EXACT
+      exact: MATCH_EXACT,
+      settle_ms: SETTLE_MS
     }),
     annotations: write('Press Key')
   },
@@ -142,7 +166,7 @@ export const tools = [
     input: z.object({
       selector: SELECTOR,
       tab_id: TAB_ID.optional(),
-      state: z.enum(['present', 'visible', 'absent']).default('visible').describe('Condition to wait for'),
+      state: z.enum(['present', 'visible', 'absent']).default('visible').describe('Condition to wait for. A ref that is gone counts as absent.'),
       timeout_ms: timeoutMs(DEFAULT_WAIT_MS, 'Give up after this long. Every call returns the current counts, so repeated short waits tell you more than one long one.'),
       exact: MATCH_EXACT,
       verbose: VERBOSE
@@ -155,7 +179,9 @@ export const handlers = {
   click: async (args) => {
     const { result, tab } = await runPage(
       args,
-      `var els = A.all(${JSON.stringify(args.selector)}, null, ${matchOpts(args)});
+      `${watchStart(args)}
+       var els = A.all(${JSON.stringify(args.selector)}, null, ${matchOpts(args)});
+       var rr = A.last.reResolved;
        var el = els[${args.nth ?? 0}];
        if (!el) return { error: 'no_match', matches: els.length };
        var control = A.control(el);
@@ -166,7 +192,7 @@ export const handlers = {
        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
        var cover = A.coveredBy(el);
        A.click(el);
-       return { clicked: A.describe(el, ${verboseFlag(args)}), control: target, matches: els.length, urlBefore: before, coveredBy: cover || undefined };`
+       return { clicked: A.describe(el, ${verboseFlag(args)}), control: target, matches: els.length, urlBefore: before, coveredBy: cover || undefined, reResolved: rr || undefined, watch: __watch };`
     );
     if (result?.error === 'no_match') {
       return { ok: false, error: `No element matches ${args.selector}`, matches: result.matches, tab };
@@ -184,7 +210,7 @@ export const handlers = {
     if (result?.coveredBy) {
       result.warning = `${result.coveredBy} sits on top of this element at its center, so a user could not click it. The synthetic click still reached it: check that something actually happened.`;
     }
-    return { ok: true, ...result, tab };
+    return withSettle(args, result, tab);
   },
 
   // A.setValue throws for anything unfillable and runPage turns that into an
@@ -194,13 +220,15 @@ export const handlers = {
     const submit = args.submit === true;
     const { result, tab } = await runPage(
       args,
-      `var els = A.all(${JSON.stringify(args.selector)}, null, ${matchOpts(args)});
+      `${watchStart(args)}
+       var els = A.all(${JSON.stringify(args.selector)}, null, ${matchOpts(args)});
+       var rr = A.last.reResolved;
        var el = els[${args.nth ?? 0}];
        if (!el) return { error: 'no_match', matches: els.length };
        A.setValue(el, ${JSON.stringify(args.value)});
        // Describe before submitting, so filled.value shows what landed even if
        // the form resets or navigates.
-       var out = { filled: A.describe(el, ${verboseFlag(args)}), matches: els.length };
+       var out = { filled: A.describe(el, ${verboseFlag(args)}), matches: els.length, reResolved: rr || undefined, watch: __watch };
        ${submit
          ? `out.urlBefore = location.href;
        // Watch for a real submit: the page's own Enter handler may submit, and
@@ -235,16 +263,17 @@ export const handlers = {
         : 'The field is not in a <form> and no page handler submitted on Enter. Click the page\'s submit button instead.';
       return { ok: false, error: `Filled, but nothing was submitted. ${why}`, ...result, tab };
     }
-    if (submit) {
-      return { ok: true, ...result, note: 'The tab may still be navigating. Call wait_for_load before reading the page.', tab };
-    }
-    return { ok: true, ...result, tab };
+    const settled = await withSettle(args, result, tab);
+    if (submit) return { ...settled, note: 'The tab may still be navigating. Call wait_for_load before reading the page.' };
+    return settled;
   },
 
   select_option: async (args) => {
     const { result, tab } = await runPage(
       args,
-      `var el = A.one(${JSON.stringify(args.selector)});
+      `${watchStart(args)}
+       var el = A.one(${JSON.stringify(args.selector)});
+       var rr = A.last.reResolved;
        if (!el) return { error: 'no_match' };
        var tag = el.tagName.toLowerCase();
        if (tag !== 'select') return { error: 'not_select', tag: tag };
@@ -271,7 +300,7 @@ export const handlers = {
        }
        el.dispatchEvent(new Event('input', { bubbles: true }));
        el.dispatchEvent(new Event('change', { bubbles: true }));
-       return { selected: chosen };`
+       return { selected: chosen, reResolved: rr || undefined, watch: __watch };`
     );
     if (result?.error === 'no_match') return { ok: false, error: `No element matches ${args.selector}`, tab };
     if (result?.error === 'not_select') {
@@ -296,14 +325,16 @@ export const handlers = {
         tab
       };
     }
-    return { ok: true, ...result, tab };
+    return withSettle(args, result, tab);
   },
 
   press_key: async (args) => {
     const { result, tab } = await runPage(
       args,
-      `var sel = ${JSON.stringify(args.selector || null)};
+      `${watchStart(args)}
+       var sel = ${JSON.stringify(args.selector || null)};
        var el = sel ? A.one(sel, 0, ${matchOpts(args)}) : (document.activeElement || document.body);
+       var rr = sel ? A.last.reResolved : false;
        if (!el) return { error: 'no_match' };
        var prevented = A.key(el, ${JSON.stringify(args.key)});
        // Identity only: a full describe of a fallback document.body would drag
@@ -314,7 +345,7 @@ export const handlers = {
          var v = el.getAttribute(names[i]);
          if (v) target[names[i]] = v.slice(0, ${TARGET_ATTR_CHARS});
        }
-       return { key: ${JSON.stringify(args.key)}, target: target, usedFocusedElement: !sel, defaultPrevented: prevented };`
+       return { key: ${JSON.stringify(args.key)}, target: target, usedFocusedElement: !sel, defaultPrevented: prevented, reResolved: rr || undefined, watch: __watch };`
     );
     if (result?.error === 'no_match') {
       // Without a selector the miss means the document had nothing to aim at.
@@ -323,7 +354,7 @@ export const handlers = {
         : 'The page has no focused element and no body to fall back to.';
       return { ok: false, error: why, tab };
     }
-    return { ok: true, ...result, tab };
+    return withSettle(args, result, tab);
   },
 
   scroll: async (args) => {
@@ -334,7 +365,7 @@ export const handlers = {
          var el = A.one(sel, 0, ${matchOpts(args)});
          if (!el) return { error: 'no_match' };
          el.scrollIntoView({ block: 'center' });
-         return { scrolledTo: A.describe(el, ${verboseFlag(args)}) };
+         return { scrolledTo: A.describe(el, ${verboseFlag(args)}), reResolved: A.last.reResolved || undefined };
        }
        var dir = ${JSON.stringify(args.direction || 'down')};
        var amount = ${args.amount ?? DEFAULT_SCROLL_PX};
@@ -360,10 +391,10 @@ export const handlers = {
       throwIfCancelled(extra);
       const { result, tab } = await runPage(
         args,
-        `var els = A.all(${JSON.stringify(args.selector)}, null, ${matchOpts(args)});
+        `var els = A.all(${JSON.stringify(args.selector)}, null, ${softOpts(args)});
          var vis = 0;
          for (var i = 0; i < els.length; i++) if (A.visible(els[i])) vis++;
-         return { count: els.length, visible: vis, first: els[0] ? A.describe(els[0], ${verboseFlag(args)}) : null };`,
+         return { count: els.length, visible: vis, staleRef: A.last.stale || undefined, reResolved: A.last.reResolved || undefined, first: els[0] ? A.describe(els[0], ${verboseFlag(args)}) : null };`,
         // Bound the probe by what is left, so a wedged call cannot push the
         // tool past the client's timeout.
         Math.max(timeout - (Date.now() - started), 1500)
@@ -382,7 +413,8 @@ export const handlers = {
       state: want,
       waitedMs: Date.now() - started,
       ...last,
-      note: `Selector "${args.selector}" was not ${want} within ${timeout}ms.`
+      note: `Selector "${args.selector}" was not ${want} within ${timeout}ms.` +
+        (last?.staleRef ? ` Ref ${last.staleRef} is stale or unknown: take a new snapshot.` : '')
     };
   }
 };
