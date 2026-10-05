@@ -1,13 +1,22 @@
 import { runJxa } from '../jxa.js';
 import { z, TAB_ID } from './schema.js';
+import { describePolicy } from '../policy.js';
 import { read, write, scoped, runTab, state } from './shared.js';
 
-async function snapshotAll() {
+async function snapshotAll({ withApp = false } = {}) {
   const result = await runJxa(
     `requireArc();
      const space = agentSpace();
-     JSON.stringify({ tabs: snapshot(), agentSpace: space ? { id: space.id(), title: space.title() } : null });`,
-    scoped()
+     // Two more Apple Events, so only the tool that reports them pays for them.
+     // null rather than a guess when Arc's scripting dictionary refuses either.
+     let app = null;
+     if (P.with_app) {
+       app = { version: null, frontmost: null };
+       try { app.version = Arc.version(); } catch (e) {}
+       try { app.frontmost = Arc.frontmost(); } catch (e) {}
+     }
+     JSON.stringify({ tabs: snapshot(), agentSpace: space ? { id: space.id(), title: space.title() } : null, app: app });`,
+    scoped({ with_app: withApp })
   );
   state.reconcile(result.tabs.map((t) => t.id));
   return result;
@@ -64,7 +73,7 @@ export const tools = [
   },
   {
     name: 'arc_status',
-    description: 'Report Arc state: which tabs this agent owns, whether the agent space exists, what a call with no tab_id resolves to, and how many tabs a previous run of this label left behind.',
+    description: 'Report Arc state: its version, whether it is the frontmost app, which tabs this agent owns, whether the agent space exists, what a call with no tab_id resolves to, how many tabs a previous run of this label left behind, and the guardrails (read-only mode, origin rules, audit log) this server was started with. Call it first.',
     // strictObject, so the generated schema keeps additionalProperties: false.
     input: z.strictObject({}),
     annotations: read('Arc Status', { openWorld: false })
@@ -73,7 +82,7 @@ export const tools = [
 
 export const handlers = {
   arc_status: async () => {
-    const { tabs, agentSpace } = await snapshotAll();
+    const { tabs, agentSpace, app } = await snapshotAll({ withApp: true });
     const owned = new Set(state.ownedIds());
     const active = tabs.find((t) => t.isActive);
     // Mirrors target() in jxa.js: the agent's own tab only counts while it is
@@ -82,6 +91,8 @@ export const handlers = {
     const currentTabId = state.currentTabId();
     const ownTab = (currentTabId && tabs.find((t) => t.id === currentTabId)) || null;
     return {
+      arc: app,
+      guardrails: describePolicy(),
       label: state.label(),
       // Ownership is per session, so two agents can share a label without
       // seeing each other's tabs. The file is where a restart looks for leaks.

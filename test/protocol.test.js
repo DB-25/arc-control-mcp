@@ -27,7 +27,7 @@ const PACKAGE = JSON.parse(readFileSync(new URL('../package.json', import.meta.u
 // Long enough that a cold module graph on a loaded CI box is not a failure,
 // short enough that a wedged server fails the test instead of hanging the run.
 const REPLY_TIMEOUT_MS = 20000;
-const EXPECTED_TOOLS = 42;
+const EXPECTED_TOOLS = 50;
 // JSON-RPC "Invalid params", which is what ErrorCode.InvalidParams maps to.
 const INVALID_PARAMS = -32602;
 // Any version in the SDK's supported list; the server echoes what it is given.

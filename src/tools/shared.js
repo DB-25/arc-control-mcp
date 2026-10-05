@@ -91,10 +91,33 @@ export function runPage(args, body, timeoutMs) {
   ).then(unwrapPage);
 }
 
+/**
+ * Which tab a call would act on, and where it is right now. The guardrails in
+ * policy.js use it to vet the target before the handler runs, resolving it with
+ * the same rules target() applies.
+ */
+export function peekTab(args, allowActiveTab) {
+  return runJxa(
+    `const tab = target(); JSON.stringify({ id: tab.id(), url: tab.url() });`,
+    scoped({ ...args, __allowActiveTab: allowActiveTab })
+  );
+}
+
 /** Same, but for scripts whose value is the whole response. */
 export function runTab(args, jxaBody, timeoutMs) {
   return runJxa(jxaBody, scoped(args), timeoutMs);
 }
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The spec asks a receiver of notifications/cancelled to stop work and release
+ * resources. Each poll spawns an osascript process against the user's Arc, so a
+ * loop that ignores the signal keeps prodding their browser for a result nobody
+ * will read. extra is absent when a handler is called internally, for instance
+ * by batch.
+ */
+export function throwIfCancelled(extra) {
+  if (extra?.signal?.aborted) throw new ArcError('Cancelled by the caller.');
+}
 export { state };

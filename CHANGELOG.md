@@ -93,6 +93,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A synthetic or CDP `Meta+A` does not select all on macOS by itself, because the
   menu bar handles it. `trusted_press_key` sends the matching editing command
   with `Meta` shortcuts (`A`, `C`, `V`, `X`, `Z`).
+- Guardrails, read once from the environment at startup. `ARC_MCP_ALLOWED_ORIGINS`
+  and `ARC_MCP_BLOCKED_ORIGINS` (comma lists, `*.example.com` wildcards) limit
+  which origins the agent may touch: `open_url` is checked against its target,
+  every other changing tool against the target tab's current URL. A refused call
+  returns `ok: false`, `blocked: true` and the rule that did it. A navigation
+  that a redirect lands on a blocked origin is reported as a failure.
+  `ARC_MCP_BLOCK_READS=1` applies the rules to read tools too. `ARC_MCP_READ_ONLY=1`
+  advertises and runs only the read tools. `ARC_MCP_AUDIT_LOG=<path>` appends one
+  JSON line per changing call (time, tool, tab, origin, ok, error) and never
+  logs typed values, fill values or script code. `arc_status` reports them.
+- `wait_for_text`: poll until any of several strings, or a regex, appears in or
+  disappears from the page's text or a scope selector.
+- `fill_form`: fill up to 50 fields in one page call, each through the same
+  checks as `fill`, with a result per field and `ok: false` naming any that failed.
+- `hover`: pointerover, pointerenter, mouseover, mouseenter, pointermove and
+  mousemove at the element's center, with `coveredBy` like `click`.
+- `type`: character-by-character typing (keydown, keypress, beforeinput,
+  native-setter append, input, keyup) for widgets that ignore `fill`, with an
+  optional `delay_ms`. It verifies the final value and fails when characters
+  did not go in.
+- `stop_loading`: Arc's AppleScript `stop` on a tab.
+- `capture_start`, `capture_read`: record console output, errors, unhandled
+  rejections and fetch and XMLHttpRequest calls (never bodies or headers).
+  Arc runs scripts in an isolated world that cannot see the page's `fetch` or
+  `console`, so the recorder is injected as a `<script>` element and relays
+  events through the DOM. A page whose CSP blocks that gets `ok: false` and the
+  reason, never a capture that silently records nothing.
+- `network_entries`: the page's requests from resource timing, with no recorder.
+- `arc_status` reports Arc's version, whether it is frontmost, and the guardrails in force.
+
+### Changed
+
+- `wait_for_load` reads the tab's `loading` property before asking the page.
+  Arc does not answer `execute javascript` on a tab that is loading, so the old
+  probe could sit for its whole timeout; a loading tab now reports
+  `ready: "loading"` and the timeout note points at `stop_loading`.
+
+### Fixed
+
+- Tabs are addressed by id rather than by position. A positional specifier is
+  re-resolved on every Apple Event, so another process opening or closing a tab
+  between a lookup and the action that followed it could land the action on a
+  different tab (seen as `stop_loading` describing another agent's tab).
 
 ## [0.3.1] - 2026-10-05
 

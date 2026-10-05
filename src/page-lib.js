@@ -177,15 +177,9 @@ var A = (function () {
     return true;
   };
 
-  // Uses the native setter so React and other frameworks see the change.
-  api.setValue = function (el, value) {
-    if (el.isContentEditable) {
-      el.focus();
-      el.textContent = value;
-      el.dispatchEvent(new Event('input', { bubbles: true }));
-      el.dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    }
+  // Throws, naming the tag, for anything a user could not type into. Shared by
+  // setValue and typeChar so fill and type refuse exactly the same targets.
+  api.assertTypable = function (el) {
     var tag = el.tagName.toLowerCase();
     if (tag === 'select') {
       throw new Error('A <select> cannot be filled. Use select_option instead.');
@@ -200,17 +194,86 @@ var A = (function () {
     if (/^(checkbox|radio|button|submit|reset|image|file)$/.test(type)) {
       throw new Error('<input type=' + type + '> has no text to fill.' + (type === 'file' ? ' A file input cannot be set from a script.' : ' Use click instead.'));
     }
-    var proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    return { tag: tag, type: type };
+  };
+
+  // Uses the native setter so React and other frameworks see the change.
+  api.nativeSet = function (el, value) {
+    var proto = el.tagName.toLowerCase() === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     var setter = Object.getOwnPropertyDescriptor(proto, 'value');
-    el.focus();
     if (setter && setter.set) setter.set.call(el, value); else el.value = value;
+  };
+
+  api.setValue = function (el, value) {
+    if (el.isContentEditable) {
+      el.focus();
+      el.textContent = value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+    var kind = api.assertTypable(el);
+    el.focus();
+    api.nativeSet(el, value);
     // Number, date and similar inputs sanitise a value they cannot parse to "".
     if (el.value !== value) {
-      throw new Error('<input type=' + type + '> did not accept ' + JSON.stringify(value) + ': its value is now ' + JSON.stringify(el.value) + '.');
+      throw new Error('<input type=' + kind.type + '> did not accept ' + JSON.stringify(value) + ': its value is now ' + JSON.stringify(el.value) + '.');
     }
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
+  };
+
+  // What a pointer arriving at the element sends, in the order a browser sends
+  // it. The enter events do not bubble, as in a real browser. CSS :hover is
+  // state the browser keeps for a real pointer and a script cannot set, so only
+  // script handlers react.
+  api.hover = function (el) {
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+    var p = api.center(el);
+    var base = { cancelable: true, view: window, clientX: p.x, clientY: p.y, button: 0 };
+    var hasPointer = !!window.PointerEvent;
+    var steps = [
+      ['pointerover', true], ['pointerenter', false], ['mouseover', true],
+      ['mouseenter', false], ['pointermove', true], ['mousemove', true]
+    ];
+    steps.forEach(function (step) {
+      var isPointer = step[0].indexOf('pointer') === 0;
+      var init = Object.assign({ bubbles: step[1] }, base);
+      if (isPointer) { init.pointerId = 1; init.pointerType = 'mouse'; init.isPrimary = true; }
+      var Ctor = isPointer && hasPointer ? PointerEvent : MouseEvent;
+      el.dispatchEvent(new Ctor(step[0], init));
+    });
+    return true;
+  };
+
+  // One character the way a keyboard delivers it. A page that cancels an event
+  // stops the steps a browser would stop: keydown cancels the rest, keypress
+  // cancels the insertion, beforeinput cancels it too. Returns whether the
+  // character landed in the field.
+  api.typeChar = function (el, ch) {
+    var code = ch.charCodeAt(0);
+    var key = { key: ch, keyCode: code, which: code, bubbles: true, cancelable: true };
+    var inserted = false;
+    var down = new KeyboardEvent('keydown', key);
+    el.dispatchEvent(down);
+    if (!down.defaultPrevented) {
+      var press = new KeyboardEvent('keypress', { key: ch, keyCode: code, which: code, charCode: code, bubbles: true, cancelable: true });
+      el.dispatchEvent(press);
+      var room = el.isContentEditable || !(el.maxLength >= 0) || el.value.length < el.maxLength;
+      if (!press.defaultPrevented && room) {
+        var before = new InputEvent('beforeinput', { inputType: 'insertText', data: ch, bubbles: true, cancelable: true });
+        el.dispatchEvent(before);
+        if (!before.defaultPrevented) {
+          if (el.isContentEditable) el.textContent = el.textContent + ch;
+          else api.nativeSet(el, el.value + ch);
+          el.dispatchEvent(new InputEvent('input', { inputType: 'insertText', data: ch, bubbles: true }));
+          inserted = true;
+        }
+      }
+    }
+    el.dispatchEvent(new KeyboardEvent('keyup', key));
+    return inserted;
   };
 
   // Returns whether the page cancelled the keydown. A synthetic key has no

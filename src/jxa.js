@@ -79,14 +79,18 @@ function snapshot() {
   return rows;
 }
 
+// Returns a specifier by id, never by position. A positional specifier
+// (w.tabs[i]) is re-resolved on every Apple Event that uses it, so another
+// process opening or closing a tab between two events shifts it onto a
+// different tab: a describe() or a close() then lands on a tab nobody chose
+// (seen as a stop_loading result describing another agent's tab). An id
+// specifier follows the tab, and fails with "Can't get object" if it is gone.
 function locate(tabId) {
   const live = liveWindows();
   for (let wi = 0; wi < live.length; wi++) {
     const w = live[wi];
     const ids = w.tabs.id();
-    for (let ti = 0; ti < ids.length; ti++) {
-      if (ids[ti] === tabId) return w.tabs[ti];
-    }
+    if (ids.indexOf(tabId) >= 0) return w.tabs.byId(tabId);
   }
   return null;
 }

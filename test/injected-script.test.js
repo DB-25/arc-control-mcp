@@ -72,3 +72,14 @@ describe('pageScript', () => {
     assert.ok(script.includes('A.failure(e)'), 'failure path must build a failure envelope');
   });
 });
+
+describe('tab specifiers', () => {
+  // A positional specifier is re-resolved on every Apple Event, so a tab
+  // opened or closed by another process shifts it onto a different tab between
+  // a lookup and the close or script that follows it.
+  it('locate returns an id specifier, never a position', () => {
+    const body = PREAMBLE.slice(PREAMBLE.indexOf('function locate('), PREAMBLE.indexOf('// Prefers a tab this agent opened'));
+    assert.ok(body.includes('.tabs.byId('), 'locate must address the tab by id');
+    assert.ok(!/\.tabs\[\w+\]/.test(body), 'locate must not return w.tabs[i]');
+  });
+});
