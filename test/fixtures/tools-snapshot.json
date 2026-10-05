@@ -302,9 +302,30 @@
     }
   },
   {
+    "name": "stop_loading",
+    "title": "Stop Loading",
+    "description": "Stop a tab that is still loading, as the browser's stop button does. Use it on a page that never finishes (a hung request, a stuck iframe, a stream): while a tab is loading, Arc does not answer scripts, so a page tool called on it hangs until it times out. Stopping unblocks them, and the page keeps whatever it had rendered. Reports whether the tab was loading, and fails if it still is afterwards.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        }
+      }
+    },
+    "annotations": {
+      "title": "Stop Loading",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
     "name": "wait_for_load",
     "title": "Wait For Load",
-    "description": "Poll until a tab has finished loading and the document is ready. Use after an action that triggers navigation.",
+    "description": "Poll until a tab has finished loading and the document is ready. Use after an action that triggers navigation. Checks Arc's own loading flag as well as document.readyState. Arc does not answer scripts while a tab loads, so the flag is what lets a slow server or a hung iframe show up as ready 'loading' on the timeout, instead of as a stalled call. If the load never ends, stop_loading ends it.",
     "inputSchema": {
       "type": "object",
       "properties": {
