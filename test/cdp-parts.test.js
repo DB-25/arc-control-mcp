@@ -34,6 +34,14 @@ describe('header redaction', () => {
     assert.equal(out['X-Custom'], 'visible');
   });
 
+  it('also redacts x-auth, session, signature, token, secret and key names', () => {
+    const names = ['X-Auth-User', 'x-authorization-extra', 'X-Session-Id', 'Session', 'x-amz-signature', 'X-Hub-Signature-256', 'X-Amz-Security-Token', 'x-shared-secret', 'X-Goog-Api-Key', 'Sec-WebSocket-Key', 'apikey'];
+    const out = redactHeaders(Object.fromEntries(names.map((n) => [n, 'v'])));
+    for (const name of names) assert.equal(out[name], '[redacted]', name);
+    const kept = redactHeaders({ 'Content-Length': '1', Accept: '*/*', 'User-Agent': 'x', Host: 'a.test', 'Keep-Alive': 'timeout=5' });
+    assert.ok(Object.values(kept).every((v) => v !== '[redacted]'), JSON.stringify(kept));
+  });
+
   it('returns a new object and tolerates missing headers', () => {
     const input = { Cookie: 'x' };
     assert.notEqual(redactHeaders(input), input);
@@ -142,6 +150,37 @@ describe('TabCapture network', () => {
     assert.deepEqual(failed.map((e) => e.url), ['https://a.test/bad', 'https://a.test/missing']);
     assert.equal(failed[0].errorText, 'net::ERR_CONNECTION_REFUSED');
     assert.equal(capture.readNetwork().entries.find((e) => e.url.endsWith('pending')).pending, true);
+  });
+
+  it('strips the query and fragment from urls unless include_query, and always the fragment', () => {
+    const s = fakeSession();
+    const capture = new TabCapture(s);
+    s.emit('Network.requestWillBeSent', request('1', 'https://a.test/api?token=SECRET&x=1#frag'));
+    s.emit('Network.requestWillBeSent', request('2', 'data:text/plain;base64,U0VDUkVU'));
+    const plain = capture.readNetwork().entries;
+    assert.equal(plain[0].url, 'https://a.test/api');
+    assert.equal(plain[1].url, 'data:\u2026');
+    assert.ok(!JSON.stringify(plain).includes('SECRET'));
+    const withQuery = capture.readNetwork({ includeQuery: true }).entries;
+    assert.equal(withQuery[0].url, 'https://a.test/api?token=SECRET&x=1');
+  });
+
+  it('url_contains cannot be used to probe for a query the caller was not given', () => {
+    const s = fakeSession();
+    const capture = new TabCapture(s);
+    s.emit('Network.requestWillBeSent', request('1', 'https://a.test/api?token=SECRET'));
+    assert.equal(capture.readNetwork({ urlContains: 'token=SECRET' }).entries.length, 0);
+    assert.equal(capture.readNetwork({ urlContains: 'token=SECRET', includeQuery: true }).entries.length, 1);
+    assert.equal(capture.readNetwork({ urlContains: '/api' }).entries.length, 1);
+  });
+
+  it('strips the query from the redirect target too', () => {
+    const s = fakeSession();
+    const capture = new TabCapture(s);
+    s.emit('Network.requestWillBeSent', request('1', 'https://a.test/old'));
+    s.emit('Network.requestWillBeSent', { ...request('1', 'https://a.test/new?code=SECRET'), redirectResponse: { status: 302 } });
+    const [first] = capture.readNetwork().entries;
+    assert.equal(first.redirectedTo, 'https://a.test/new');
   });
 
   it('records each redirect hop as its own request', () => {

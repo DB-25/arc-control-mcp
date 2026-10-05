@@ -1641,7 +1641,7 @@
   {
     "name": "network_requests",
     "title": "Network Requests",
-    "description": "List the network requests a tab has made: method, url, status, type, timing and transferred size. No bodies. Headers are left out unless include_headers is set, and even then cookie, authorization and set-cookie values are redacted. Needs the DevTools engine. Note that URLs are reported as they are, query string included. Capture starts the first time any CDP tool touches this tab, and CDP has no history to read back, so nothing from before that is here. Call this tool (or cdp_status then any CDP tool) before the action you want to observe.",
+    "description": "List the network requests a tab has made: method, url, status, type, timing and transferred size. No bodies. Headers are left out unless include_headers is set, and even then cookie, authorization and set-cookie values are redacted. Needs the DevTools engine. URLs are shown without their query string and fragment, since queries often carry tokens; include_query keeps the query. Header names that look like credentials (cookie, authorization, anything with token, secret, key, session or signature in the name, x-auth-*) are redacted. Capture starts the first time any CDP tool touches this tab, and CDP has no history to read back, so nothing from before that is here. Call this tool (or cdp_status then any CDP tool) before the action you want to observe.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1672,6 +1672,11 @@
         "include_headers": {
           "default": false,
           "description": "Include request and response headers, with credential headers redacted",
+          "type": "boolean"
+        },
+        "include_query": {
+          "default": false,
+          "description": "Keep the url query string. Off by default because queries often carry tokens, and url_contains then matches the url without its query.",
           "type": "boolean"
         },
         "clear": {

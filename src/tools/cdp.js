@@ -191,7 +191,7 @@ export const tools = [
     name: 'network_requests',
     description:
       'List the network requests a tab has made: method, url, status, type, timing and transferred size. No bodies. Headers are left out unless include_headers is set, and even then cookie, authorization and set-cookie values are redacted. Needs the DevTools engine. ' +
-      'Note that URLs are reported as they are, query string included. ' +
+      'URLs are shown without their query string and fragment, since queries often carry tokens; include_query keeps the query. Header names that look like credentials (cookie, authorization, anything with token, secret, key, session or signature in the name, x-auth-*) are redacted. ' +
       CAPTURE_NOTE,
     input: z.object({
       tab_id: OWN_TAB_ID.optional(),
@@ -200,6 +200,7 @@ export const tools = [
       failed_only: z.boolean().default(false).describe('Only requests that failed or returned status 400 or above'),
       limit: LIMIT,
       include_headers: z.boolean().default(false).describe('Include request and response headers, with credential headers redacted'),
+      include_query: z.boolean().default(false).describe('Keep the url query string. Off by default because queries often carry tokens, and url_contains then matches the url without its query.'),
       clear: z.boolean().default(false).describe('Empty this tab\'s network buffer after reading')
     }),
     ownTabOnly: true,
@@ -285,6 +286,7 @@ export const handlers = {
         failedOnly: args.failed_only,
         limit: args.limit,
         includeHeaders: args.include_headers,
+        includeQuery: args.include_query,
         clear: args.clear
       }),
       capturingSince: tab.capture.startedAt

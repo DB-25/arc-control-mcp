@@ -13,8 +13,11 @@ const MAX_TEXT_CHARS = 2000;
 const REDACTED = '[redacted]';
 
 // Credentials a page or its server put in a header. The pattern half catches
-// the usual custom names (x-api-key, x-csrf-token) without listing them all.
-const SENSITIVE_HEADER = /^(cookie|set-cookie|authorization|proxy-authorization)$|token|api[-_]?key|secret/i;
+// the usual custom names (x-api-key, x-csrf-token, x-auth-user, x-session-id,
+// x-signature, anything with token, secret or key in it) without listing them
+// all. Over-matching is the safe direction: a redacted harmless header costs a
+// glance, a leaked one costs a session.
+const SENSITIVE_HEADER = /^(cookie|set-cookie|authorization|proxy-authorization)$|^x-auth|session|signature|token|secret|key/i;
 
 /** A copy of the headers with every credential-bearing value replaced. */
 export function redactHeaders(headers) {
@@ -66,6 +69,18 @@ export function formatRemoteObject(object) {
     return `${object.className || object.subtype || 'Object'} {${props}${object.preview.overflow ? ', …' : ''}}`;
   }
   return object.description ?? `[${object.type}]`;
+}
+
+/**
+ * A URL as network_requests shows it: never the fragment, and the query only on
+ * request, since queries routinely carry tokens. A data: URL is the payload
+ * itself, so only its scheme is kept.
+ */
+export function cleanUrl(url, { includeQuery = false } = {}) {
+  const text = String(url ?? '');
+  if (/^data:/i.test(text)) return 'data:\u2026';
+  const noFragment = text.split('#')[0];
+  return includeQuery ? noFragment : noFragment.split('?')[0];
 }
 
 const isoFromMs = (ms) => new Date(ms).toISOString();
@@ -218,14 +233,19 @@ export class TabCapture {
     return result;
   }
 
-  readNetwork({ urlContains, type, failedOnly = false, limit = 100, includeHeaders = false, clear = false } = {}) {
+  readNetwork({ urlContains, type, failedOnly = false, limit = 100, includeHeaders = false, includeQuery = false, clear = false } = {}) {
+    const clean = (url) => cleanUrl(url, { includeQuery });
     let rows = this.network.toArray();
-    if (urlContains) rows = rows.filter((r) => r.url.includes(urlContains));
+    // Matched against the url as it will be shown, so a filter cannot be used
+    // to probe for a query string the caller was not given.
+    if (urlContains) rows = rows.filter((r) => clean(r.url).includes(urlContains));
     if (type) rows = rows.filter((r) => r.type.toLowerCase() === type.toLowerCase());
     if (failedOnly) rows = rows.filter((r) => r.failed || (r.status !== null && r.status >= 400));
     const total = rows.length;
     const entries = rows.slice(-limit).map(({ mono, requestHeaders, responseHeaders, ...rest }) => ({
       ...rest,
+      url: clean(rest.url),
+      ...(rest.redirectedTo ? { redirectedTo: clean(rest.redirectedTo) } : {}),
       pending: rest.status === null && !rest.failed ? true : undefined,
       // Held redacted already; omitted unless asked for, to keep results small.
       ...(includeHeaders ? { requestHeaders, responseHeaders } : {})
