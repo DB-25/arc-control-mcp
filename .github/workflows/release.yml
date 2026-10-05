@@ -37,22 +37,34 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # Run from main with a tag to finish a release whose later steps failed. The
+  # tag's own copy of this file may predate a fix, so this run uses main's
+  # copy and checks out the tag's code.
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing version tag to (re)publish, for example v0.3.1. Leave empty when running on a tag.'
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 jobs:
   publish:
-    name: Publish ${{ github.ref_name }}
+    name: Publish ${{ inputs.tag || github.ref_name }}
     runs-on: ubuntu-latest
     environment: release
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
     permissions:
       contents: write # create the GitHub release
       id-token: write # mint the OIDC token npm and mcp-publisher exchange
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || github.ref }}
 
       - uses: actions/setup-node@v7
         with:
@@ -84,11 +96,11 @@ jobs:
       - name: Check the tag, package.json and server.json all agree
         run: |
           set -euo pipefail
-          if [ "$GITHUB_REF_TYPE" != tag ]; then
-            echo "::error::Run this on a version tag, not a branch. Pick the tag in the Run workflow dropdown."
+          if [ -z "${{ inputs.tag }}" ] && [ "$GITHUB_REF_TYPE" != tag ]; then
+            echo "::error::Run this on a version tag, or from main with the tag input set."
             exit 1
           fi
-          tag="${GITHUB_REF_NAME#v}"
+          tag="${RELEASE_TAG#v}"
           pkg="$(node -p 'require("./package.json").version')"
           srv="$(node -p 'require("./server.json").version')"
           srv_pkg="$(node -p 'require("./server.json").packages[0].version')"
@@ -118,7 +130,7 @@ jobs:
       - name: Publish to npm
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           if npm view "arc-control-mcp@$version" version >/dev/null 2>&1; then
             echo "arc-control-mcp@$version is already on npm, skipping the publish."
           else
@@ -131,7 +143,7 @@ jobs:
       - name: Wait until npm serves the new version
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           for attempt in $(seq 1 30); do
             if [ "$(npm view "arc-control-mcp@$version" version 2>/dev/null || true)" = "$version" ]; then
               echo "npm serves $version (attempt $attempt)."
@@ -163,6 +175,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          notes="$(printf 'macOS only. Install with \`npx -y arc-control-mcp@%s\`.\n\nWhat changed: https://github.com/%s/blob/%s/CHANGELOG.md\n' "$version" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME")"
-          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --notes "$notes"
+          version="${RELEASE_TAG#v}"
+          notes="$(printf 'macOS only. Install with \`npx -y arc-control-mcp@%s\`.\n\nWhat changed: https://github.com/%s/blob/%s/CHANGELOG.md\n' "$version" "$GITHUB_REPOSITORY" "$RELEASE_TAG")"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists."
+            exit 0
+          fi
+          gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --notes "$notes"
