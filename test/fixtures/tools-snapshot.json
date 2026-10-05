@@ -61,7 +61,7 @@
   {
     "name": "switch_to_tab",
     "title": "Switch To Tab",
-    "description": "Make a tab the active tab in its window. Changes what the user sees, so prefer reading a tab by id when you only need its content.",
+    "description": "Make a tab the active tab in its window. Changes what the user sees, so prefer reading a tab by id when you only need its content. Waits until the user has stopped typing or moving the mouse, and fails with userActive true if they never pause.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -133,7 +133,7 @@
   {
     "name": "arc_status",
     "title": "Arc Status",
-    "description": "Report Arc state: which tabs this agent owns, whether the agent space exists, what a call with no tab_id resolves to, and how many tabs a previous run of this label left behind.",
+    "description": "Report Arc state: which tabs this agent owns, the dedicated agent window (id, placement, display, minimized, whether Accessibility is available), the user idle time and activity gate, whether the agent space exists, what a call with no tab_id resolves to, and how many tabs a previous run of this label left behind.",
     "inputSchema": {
       "type": "object",
       "properties": {},
@@ -150,7 +150,7 @@
   {
     "name": "open_url",
     "title": "Open URL",
-    "description": "Open a URL in Arc. Launches Arc if needed. New tabs go into the agent space when one exists, otherwise the main window. Arc auto-selects new tabs, so the previous selection is put back unless you pass activate.",
+    "description": "Open a URL in Arc. Launches Arc if needed. New tabs go into one dedicated agent window (placed on a second display when there is one), never the user's own window, and the user's focused window is put back if Arc raised another. Waits until the user has stopped typing or moving the mouse, and fails with userActive true if they never pause: retry later. Pass activate to bring the tab to the front.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -178,7 +178,7 @@
         },
         "activate": {
           "default": false,
-          "description": "Bring Arc to the front and leave the new tab selected",
+          "description": "Bring Arc to the front and leave the new tab selected. Visible to the user, so it waits for them to pause.",
           "type": "boolean"
         },
         "wait_until_loaded": {
@@ -802,7 +802,7 @@
   {
     "name": "focus_space",
     "title": "Focus Space",
-    "description": "Switch the front Arc window to a space. This changes what the user sees, so it is rarely needed: tabs in an unfocused space are still fully readable and scriptable.",
+    "description": "Switch the front Arc window to a space. This changes what the user sees, so it is rarely needed: tabs in an unfocused space are still fully readable and scriptable. Waits until the user has stopped typing or moving the mouse, and fails with userActive true if they never pause.",
     "inputSchema": {
       "type": "object",
       "properties": {

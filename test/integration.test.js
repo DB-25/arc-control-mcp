@@ -49,6 +49,11 @@ if (!REASON) {
   fixtureDir = mkdtempSync(join(tmpdir(), 'arc-integration-'));
   process.env.ARC_MCP_STATE_DIR = join(fixtureDir, 'state');
   process.env.ARC_MCP_LABEL = 'arc-control-integration';
+  // The agent window is remembered in the state directory, so a throwaway one
+  // here would create a new window on every run, and a window cannot be closed
+  // from outside. These tests use the space mode; the dedicated window has its
+  // own live checklist (see the README) and fake-driver unit tests.
+  process.env.ARC_MCP_WINDOW = 'space';
 }
 
 // Dynamic imports, because state.js reads ARC_MCP_* once at import and the

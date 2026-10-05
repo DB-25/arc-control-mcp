@@ -11,7 +11,7 @@ export const tools = [
   },
   {
     name: 'focus_space',
-    description: "Switch the front Arc window to a space. This changes what the user sees, so it is rarely needed: tabs in an unfocused space are still fully readable and scriptable.",
+    description: "Switch the front Arc window to a space. This changes what the user sees, so it is rarely needed: tabs in an unfocused space are still fully readable and scriptable. Waits until the user has stopped typing or moving the mouse, and fails with userActive true if they never pause.",
     input: z.object({ space: z.string().describe('Space id or title from list_spaces') }),
     annotations: write('Focus Space', { idempotent: true, openWorld: false })
   }
