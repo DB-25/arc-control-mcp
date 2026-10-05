@@ -1,3 +1,10 @@
+import { SNAPSHOT_LIB } from './page-snapshot.js';
+
+// The snapshot helpers are a few hundred lines, and every call ships the
+// library through osascript, so they ride along only when the script can use
+// them. A false positive costs bytes, never correctness.
+const SEMANTIC_HINT = /\b(?:ref|role|label|placeholder)\s*=|A\.snapshot/;
+
 /**
  * Helpers injected into the page ahead of every DOM expression. Composed in
  * Node and shipped through Arc's `execute javascript`, so tool code stays
@@ -8,6 +15,9 @@ var A = (function () {
   var api = {};
 
   var TEXT_PREFIX = 'text=';
+  // ref=, role=, label= and placeholder= are resolved by the semantic helpers
+  // in page-snapshot.js, which are injected only when a script mentions them.
+  var SEMANTIC = /^(?:ref|role|label|placeholder)=/;
 
   // Named keys get a legacy keyCode. Printable characters are handled
   // separately, since keypress needs a charCode to look real to old handlers.
@@ -29,9 +39,19 @@ var A = (function () {
   // "text=Sign in" matches on visible text, anything else is a CSS selector.
   // Exact matches come back before substring matches, so the obvious target
   // wins on a page where the same word appears inside longer labels.
+  // api.last reports what the latest lookup had to do beyond finding the
+  // element, so a handler can say a ref was re-resolved.
+  api.last = { reResolved: false };
   api.all = function (selector, root, opts) {
     root = root || document;
     opts = opts || {};
+    api.last = { reResolved: false };
+    if (SEMANTIC.test(selector)) {
+      if (!api.semantic) {
+        throw new Error('The selector "' + selector + '" needs the semantic helpers, which are injected only when the script text mentions ref=, role=, label= or placeholder=. Write the selector as a literal in the script.');
+      }
+      return api.semantic(selector, root, opts);
+    }
     if (selector.indexOf(TEXT_PREFIX) !== 0) {
       return Array.prototype.slice.call(root.querySelectorAll(selector));
     }
@@ -214,6 +234,45 @@ var A = (function () {
     return down.defaultPrevented;
   };
 
+  // A mutating action starts a MutationObserver before it acts, and the Node
+  // side polls settleStatus afterwards. The wait cannot happen inside the
+  // action's own call: Arc's execute javascript returns synchronously, and
+  // blocking would also freeze the page's timers that are meant to react.
+  function now() { return window.performance.now(); }
+
+  api.watch = function () {
+    var prev = window.__arcWatch;
+    if (prev && prev.obs) prev.obs.disconnect();
+    var st = { id: Math.random().toString(36).slice(2), start: now(), last: null, count: 0, obs: null };
+    st.obs = new MutationObserver(function (records) {
+      st.last = now();
+      st.count += records.length;
+    });
+    st.obs.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+    Object.defineProperty(window, '__arcWatch', { value: st, writable: true, configurable: true, enumerable: false });
+    return st.id;
+  };
+
+  api.settleStatus = function (id, quietMs) {
+    var st = window.__arcWatch;
+    // A navigation replaces the window, and the observer goes with it.
+    if (!st || st.id !== id) return { lost: true };
+    // Records queued but not yet delivered still count as activity.
+    var pending = st.obs.takeRecords();
+    if (pending.length) { st.last = now(); st.count += pending.length; }
+    var t = now();
+    var quietFor = Math.round(t - (st.last === null ? st.start : st.last));
+    var done = quietFor >= quietMs;
+    if (done) st.obs.disconnect();
+    return {
+      done: done,
+      quietFor: quietFor,
+      settledMs: st.last === null ? 0 : Math.round(st.last - st.start),
+      mutations: st.count,
+      hidden: document.hidden
+    };
+  };
+
   api.miss = function (selector) {
     return { error: 'no_match', selector: selector };
   };
@@ -258,7 +317,7 @@ var A = (function () {
  * indistinguishable from a page value of null.
  */
 export function pageScript(body) {
-  return `${PAGE_LIB}
+  return `${PAGE_LIB}${SEMANTIC_HINT.test(body) ? SNAPSHOT_LIB : ''}
 (function(){
   try {
     return A.envelope((function(){

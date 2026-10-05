@@ -7,9 +7,10 @@ import * as content from './tools/content.js';
 import * as interact from './tools/interact.js';
 import * as spaces from './tools/spaces.js';
 import * as scripting from './tools/scripting.js';
+import * as snapshot from './tools/snapshot.js';
 
 // Drop a module in here and its tools are exposed; nothing else needs changing.
-const MODULES = { tabs, navigation, content, interact, spaces, scripting };
+const MODULES = { tabs, navigation, content, interact, spaces, scripting, snapshot };
 
 export const TOOLS = [];
 export const HANDLERS = {};

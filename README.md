@@ -235,7 +235,7 @@ loses nothing but a few wasted calls.
 
 ## Tools
 
-26 tools in six modules.
+27 tools in seven modules.
 
 ### Tabs
 
