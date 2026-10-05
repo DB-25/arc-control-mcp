@@ -9,11 +9,12 @@ import * as spaces from './tools/spaces.js';
 import * as scripting from './tools/scripting.js';
 import * as wait from './tools/wait.js';
 import * as input from './tools/input.js';
+import * as capture from './tools/capture.js';
 import { POLICY, createGuard, openAudit, readOnlyRefusal } from './policy.js';
 import { peekTab } from './tools/shared.js';
 
 // Drop a module in here and its tools are exposed; nothing else needs changing.
-const MODULES = { tabs, navigation, content, interact, spaces, scripting, wait, input };
+const MODULES = { tabs, navigation, content, interact, spaces, scripting, wait, input, capture };
 
 export const TOOLS = [];
 export const HANDLERS = {};

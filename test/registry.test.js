@@ -14,8 +14,8 @@ import { TOOLS, HANDLERS, MODULE_NAMES } from '../src/registry.js';
 
 // Counts are a deliberate tripwire: the README, --help output and CHANGELOG all
 // quote them, so a tool added or dropped without updating them fails here.
-const EXPECTED_TOOLS = 31;
-const EXPECTED_MODULES = ['tabs', 'navigation', 'content', 'interact', 'spaces', 'scripting', 'wait', 'input'];
+const EXPECTED_TOOLS = 34;
+const EXPECTED_MODULES = ['tabs', 'navigation', 'content', 'interact', 'spaces', 'scripting', 'wait', 'input', 'capture'];
 
 const SRC_DIR = new URL('../src/', import.meta.url);
 const temps = [];
