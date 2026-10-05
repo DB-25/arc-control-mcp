@@ -7,8 +7,10 @@
 # these hold, so it never interrupts someone mid-session:
 #   1. Arc is running,
 #   2. nothing answers on the DevTools port,
-#   3. the Arc process is younger than ARC_CDP_HEALER_FRESH_SECONDS (default 90),
-#      meaning it was just launched by the user or relaunched by a Sparkle update.
+#   3. the Arc process is younger than ARC_CDP_HEALER_FRESH_SECONDS (default 180),
+#      meaning it was just launched by the user or relaunched by a Sparkle update,
+#   4. nobody has touched the keyboard or mouse for ARC_CDP_HEALER_IDLE_SECONDS
+#      (default 5), so Arc is never quit under someone who is using it.
 # Then it quits Arc gracefully through AppleScript and reopens it with
 #   open -a Arc --args --remote-debugging-port=PORT
 # Arc restores the session on launch.
@@ -28,7 +30,8 @@
 set -u
 
 PORT="${ARC_MCP_CDP_PORT:-9222}"
-FRESH_SECONDS="${ARC_CDP_HEALER_FRESH_SECONDS:-90}"
+FRESH_SECONDS="${ARC_CDP_HEALER_FRESH_SECONDS:-180}"
+IDLE_SECONDS="${ARC_CDP_HEALER_IDLE_SECONDS:-5}"
 COOLDOWN_SECONDS="${ARC_CDP_HEALER_COOLDOWN_SECONDS:-600}"
 QUIT_WAIT_SECONDS="${ARC_CDP_HEALER_QUIT_WAIT_SECONDS:-20}"
 LOG="${ARC_CDP_HEALER_LOG:-$HOME/Library/Logs/arc-cdp-healer.log}"
@@ -60,6 +63,14 @@ ETIME="$(ps -o etime= -p "$ARC_PID" 2>/dev/null | tr -d ' ')"
 AGE="$(etime_to_seconds "$ETIME")"
 if [ "$AGE" -ge "$FRESH_SECONDS" ]; then
   # A long-running Arc without the flag is a session in use. Leave it alone.
+  exit 0
+fi
+
+# Quitting Arc while someone types into it would lose what they typed. Wait
+# for a pause; the next run 30 seconds later tries again within the window.
+IDLE_NS="$(ioreg -c IOHIDSystem -d 4 2>/dev/null | awk '/HIDIdleTime/ {print $NF; exit}')"
+if [ -n "$IDLE_NS" ] && [ $(( IDLE_NS / 1000000000 )) -lt "$IDLE_SECONDS" ]; then
+  log "wait: Arc started ${AGE}s ago without port ${PORT}, but the user is active. Trying again on the next run."
   exit 0
 fi
 

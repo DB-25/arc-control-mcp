@@ -31,6 +31,8 @@ beforeEach(() => {
   stub('curl', 'echo "curl $*" >> "' + calls + '"; exit "${STUB_CURL_EXIT:-7}"');
   stub('osascript', `echo "osascript $*" >> "${calls}"; [ "\${STUB_QUIT_WORKS:-1}" = 1 ] && touch "${root}/quit"; exit 0`);
   stub('open', `echo "open $*" >> "${calls}"`);
+  // The real ioreg would make these tests depend on whoever is at the keyboard.
+  stub('ioreg', 'echo "    | |   \\"HIDIdleTime\\" = ${STUB_IDLE_NS:-60000000000}"');
 });
 
 afterEach(() => rmSync(root, { recursive: true, force: true }));
@@ -60,15 +62,15 @@ describe('arc-cdp-healer.sh', () => {
   });
 
   it('does nothing to an Arc that has been running a while, so it never interrupts a session', () => {
-    for (const etime of ['01:30', '05:12', '02:00:00', '3-04:05:06']) {
+    for (const etime of ['03:00', '05:12', '02:00:00', '3-04:05:06']) {
       assert.deepEqual(run({ STUB_ETIME: etime }).calls, [], `etime ${etime}`);
     }
   });
 
-  it('treats 89 seconds as fresh and 90 as a session in use', () => {
-    assert.equal(run({ STUB_ETIME: '01:29', ARC_CDP_HEALER_STATE: join(root, 's1') }).calls.length, 2);
+  it('treats 179 seconds as fresh and 180 as a session in use', () => {
+    assert.equal(run({ STUB_ETIME: '02:59', ARC_CDP_HEALER_STATE: join(root, 's1') }).calls.length, 2);
     rmSync(join(root, 'calls'));
-    assert.equal(run({ STUB_ETIME: '01:30', ARC_CDP_HEALER_STATE: join(root, 's2') }).calls.length, 0);
+    assert.equal(run({ STUB_ETIME: '03:00', ARC_CDP_HEALER_STATE: join(root, 's2') }).calls.length, 0);
   });
 
   it('quits a just-started Arc gracefully and reopens it with the flag, in that order', () => {
@@ -116,5 +118,10 @@ describe('arc-cdp-healer.sh', () => {
     assert.match(plist, /<string>company\.thebrowser\.arc-cdp-healer<\/string>/);
     assert.match(plist, /<key>StartInterval<\/key>\s*<integer>30<\/integer>/);
     assert.ok(plist.includes('__SCRIPT_PATH__') && plist.includes('__HOME__'));
+  });
+
+  it('never quits Arc while the user is typing or moving the mouse', () => {
+    const result = run({ STUB_IDLE_NS: '800000000', ARC_CDP_HEALER_STATE: join(root, 's-active') });
+    assert.deepEqual(result.calls.filter((c) => c.startsWith('osascript') || c.startsWith('open')), []);
   });
 });

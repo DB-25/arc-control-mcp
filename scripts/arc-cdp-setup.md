@@ -75,8 +75,9 @@ Arc updates itself with Sparkle, which relaunches Arc without your flag, so the
 port silently disappears after each update. `arc-cdp-healer.sh` puts it back.
 
 It runs every 30 seconds from a LaunchAgent and does nothing unless **all** of
-these are true: Arc is running, the port is closed, and Arc's process started
-less than 90 seconds ago (it was just launched by you or by an update). Then it
+these are true: Arc is running, the port is closed, Arc's process started less
+than 180 seconds ago (it was just launched by you or by an update), and nobody
+has touched the keyboard or mouse for 5 seconds. Then it
 quits Arc gracefully through AppleScript and reopens it with the flag. A
 long-running Arc without the flag is a session in use, so it is left alone. After
 one attempt it waits 10 minutes before trying again, so an Arc that ignores the

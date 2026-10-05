@@ -127,8 +127,9 @@ dependencies.
   nothing answers.
 - `scripts/arc-cdp-setup.md`, `scripts/arc-cdp-healer.sh` and a LaunchAgent
   template. The healer re-applies the flag after a Sparkle update: every 30
-  seconds, and only when Arc is running, the port is closed and Arc started less
-  than 90 seconds ago does it quit Arc gracefully and reopen it with the flag. It
+  seconds, and only when Arc is running, the port is closed, Arc started less than
+  180 seconds ago and the user has been idle for 5 seconds does it quit Arc
+  gracefully and reopen it with the flag. It
   waits 10 minutes between attempts, never force-kills, and is not installed by
   anything in this package.
 - A tool result can now carry an image. `batch` drops it and says so.
