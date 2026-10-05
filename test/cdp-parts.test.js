@@ -8,7 +8,7 @@ import { join } from 'node:path';
 
 import { TabCapture, redactHeaders, Ring, formatRemoteObject, MAX_CONSOLE_ENTRIES } from '../src/cdp/capture.js';
 import { keyPressEvents, parseCombo, charEvents, MODIFIER_BITS } from '../src/cdp/keys.js';
-import { validateUploadPaths, imageSize } from '../src/cdp/page-ops.js';
+import { validateUploadPaths, isSensitivePath, imageSize } from '../src/cdp/page-ops.js';
 import { cdpScript } from '../src/cdp/tab.js';
 import { toContent, omitImage } from '../src/result.js';
 
@@ -252,12 +252,56 @@ describe('upload path validation', () => {
   });
 
   it('refuses credential locations, including through a symlink', () => {
-    assert.throws(() => check([join(home, '.ssh', 'id_rsa')]), /credentials or browser-profile/);
-    assert.throws(() => check([join(home, 'Documents', 'innocent.txt')]), /credentials or browser-profile/);
-    assert.throws(() => check([join(home, 'Documents', '.env')]), /credentials or browser-profile/);
+    assert.throws(() => check([join(home, '.ssh', 'id_rsa')]), /browser-profile/);
+    assert.throws(() => check([join(home, 'Documents', 'innocent.txt')]), /browser-profile/);
+    assert.throws(() => check([join(home, 'Documents', '.env')]), /browser-profile/);
+  });
+
+  it('refuses env variants, shell history, mail, messages, Safari and browser profiles on disk', () => {
+    const files = [
+      ['.env.local'], ['.env.production'], ['.ENV.Staging'], ['.zsh_history'], ['.bash_history'],
+      ['Library', 'Messages', 'chat.db'], ['Library', 'Mail', 'V10', 'Envelope Index'],
+      ['Library', 'Safari', 'History.db'], ['Library', 'Keychains', 'login.keychain-db'],
+      ['Library', 'Application Support', 'Arc', 'User Data', 'Default', 'Cookies'],
+      ['Library', 'Application Support', 'Google', 'Chrome', 'Default', 'Login Data']
+    ];
+    for (const parts of files) {
+      mkdirSync(join(home, ...parts.slice(0, -1)), { recursive: true });
+      writeFileSync(join(home, ...parts), 'x');
+      assert.throws(() => check([join(home, ...parts)]), /browser-profile/, parts.join('/'));
+    }
+  });
+
+  it('still accepts a file whose name only looks similar', () => {
+    for (const name of ['environment.txt', 'my.env.txt', 'zsh_history_notes.md']) {
+      writeFileSync(join(home, 'Documents', name), 'x');
+      assert.equal(check([join(home, 'Documents', name)]).length, 1, name);
+    }
   });
 
   it('cleans up', () => rmSync(dir, { recursive: true, force: true }));
+});
+
+describe('isSensitivePath compares case-insensitively, as a macOS volume does', () => {
+  const homes = ['/Users/db'];
+
+  it('refuses the same directory spelled in another case', () => {
+    for (const path of ['/users/db/.ssh/id_rsa', '/USERS/DB/.SSH/id_ed25519', '/Users/db/library/keychains/login.keychain-db', '/users/db/Library/Application Support/arc/x']) {
+      assert.equal(isSensitivePath(path, homes), true, path);
+    }
+  });
+
+  it('refuses env variants and shell history under any case', () => {
+    for (const path of ['/Users/db/app/.ENV', '/Users/db/app/.env.local', '/tmp/x/.Env.Production', '/Users/db/.ZSH_HISTORY', '/Users/db/.bash_history']) {
+      assert.equal(isSensitivePath(path, homes), true, path);
+    }
+  });
+
+  it('does not treat a sibling directory with a shared prefix as the sensitive one', () => {
+    for (const path of ['/Users/db/.ssh-notes/readme.txt', '/Users/db/Library/MailTemplates/a.html', '/Users/db/Documents/.env-example.md']) {
+      assert.equal(isSensitivePath(path, homes), false, path);
+    }
+  });
 });
 
 describe('imageSize', () => {

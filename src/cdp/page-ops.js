@@ -75,12 +75,34 @@ export async function screenshot(t, args) {
 
 // Files a page could use to take over an account or a machine. A model that was
 // talked into "uploading" one of these is the case this list is for.
-const SENSITIVE_PATHS = [
+// Directories are relative to the home directory.
+const SENSITIVE_DIRS = [
   '.ssh', '.aws', '.gnupg', '.kube', '.docker', '.config/gcloud', '.config/gh',
-  'Library/Keychains', 'Library/Cookies', 'Library/Application Support/Arc',
-  'Library/Application Support/Google/Chrome', 'Library/Application Support/Firefox'
+  'Library/Keychains', 'Library/Cookies', 'Library/Messages', 'Library/Mail', 'Library/Safari',
+  'Library/Containers/com.apple.Safari',
+  // Browser profiles hold cookies, saved logins and history.
+  'Library/Application Support/Arc', 'Library/Application Support/Google/Chrome',
+  'Library/Application Support/Chromium', 'Library/Application Support/Firefox'
 ];
-const SENSITIVE_NAMES = new Set(['.netrc', '.npmrc', '.pypirc', '.git-credentials', '.env']);
+// Matched against the file name, case-insensitively.
+const SENSITIVE_NAMES = new Set([
+  '.netrc', '.npmrc', '.pypirc', '.git-credentials', '.env',
+  '.zsh_history', '.bash_history', '.python_history', '.node_repl_history', '.psql_history', '.mysql_history'
+]);
+const SENSITIVE_NAME_PATTERNS = [/^\.env\..+/];
+
+/**
+ * Whether a resolved path is one a page must not receive. macOS volumes are
+ * case-insensitive by default, so /users/db/.ssh is the same directory as
+ * /Users/db/.ssh and both sides are compared lowercased.
+ */
+export function isSensitivePath(real, homes) {
+  const path = real.toLowerCase();
+  const prefixes = homes.flatMap((h) => SENSITIVE_DIRS.map((d) => `${join(h, d).toLowerCase()}${sep}`));
+  if (prefixes.some((prefix) => path.startsWith(prefix))) return true;
+  const name = basename(path);
+  return SENSITIVE_NAMES.has(name) || SENSITIVE_NAME_PATTERNS.some((p) => p.test(name));
+}
 
 /**
  * Absolute, existing, regular files only. Symlinks are resolved first, so a
@@ -91,15 +113,14 @@ export function validateUploadPaths(paths, { home = homedir() } = {}) {
   // Compared against resolved paths, so the home directory is resolved too:
   // on macOS a home or volume reached through a symlink would otherwise never match.
   const homes = [home];
-  try { homes.push(realpathSync(home)); } catch { /* no such home: the raw prefix still applies */ }
-  const sensitive = homes.flatMap((h) => SENSITIVE_PATHS.map((p) => join(h, p) + sep));
+  try { homes.push(realpathSync.native(home)); } catch { /* no such home: the raw prefix still applies */ }
   return paths.map((path) => {
     if (!isAbsolute(path)) throw new ArcError(`"${path}" is not an absolute path. Give full paths such as /Users/you/file.pdf; nothing is resolved against a working directory.`);
     if (!existsSync(path)) throw new ArcError(`"${path}" does not exist.`);
-    const real = realpathSync(path);
+    const real = realpathSync.native(path);
     if (!statSync(real).isFile()) throw new ArcError(`"${path}" is not a regular file. Directories cannot be uploaded.`);
-    if (sensitive.some((prefix) => real.startsWith(prefix)) || SENSITIVE_NAMES.has(basename(real))) {
-      throw new ArcError(`"${path}" is a credentials or browser-profile file, which a web page must not receive. Refused.`);
+    if (isSensitivePath(real, homes) || isSensitivePath(path, homes)) {
+      throw new ArcError(`"${path}" is a credentials, history, mail or browser-profile file, which a web page must not receive. Refused.`);
     }
     return real;
   });

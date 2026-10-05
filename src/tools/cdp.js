@@ -142,7 +142,7 @@ export const tools = [
   {
     name: 'upload_file',
     description:
-      'Set the files of an <input type=file>, as if chosen in the file picker. Paths must be absolute and point at existing regular files; anything else is refused, as are credential and browser-profile files (~/.ssh, ~/.aws, Arc\'s own profile, .env, and similar). ' +
+      'Set the files of an <input type=file>, as if chosen in the file picker. Paths must be absolute and point at existing regular files; anything else is refused, as are credential, shell-history, mail and browser-profile files (~/.ssh, ~/.aws, Arc and Chrome profiles, Messages, Mail, Safari, Keychains, .env and .env.*, .zsh_history, and similar), whatever the letter case of the path. ' +
       'The page receives its normal input and change events. Needs the DevTools engine. Many sites hide the real input behind a button: select the hidden input element itself.',
     input: z.object({
       selector: SELECTOR.describe('The file input: a CSS selector such as input[type=file], "text=Label", or ref=, role=, label=, placeholder= as in click.'),
