@@ -59,6 +59,8 @@ const { handlers: tabTools } = await import('../src/tools/tabs.js');
 const { handlers: content } = await import('../src/tools/content.js');
 const { handlers: interact } = await import('../src/tools/interact.js');
 const { handlers: scripting } = await import('../src/tools/scripting.js');
+// Binds batch's tool lookup, as src/index.js does at startup.
+await import('../src/registry.js');
 const { ArcError } = await import('../src/jxa.js');
 const state = await import('../src/state.js');
 
@@ -74,8 +76,24 @@ const PAGE_TWO = `<!doctype html><html><head><meta charset="utf-8"><title>arc-co
 <button id="locked" disabled onclick="document.body.dataset.clicked='locked'"><span>Locked save</span></button>
 <button id="open" onclick="document.body.dataset.clicked='open'"><span>Open save</span></button></body></html>`;
 
+// A page where a synthetic event can do what no user could: a control under a
+// backdrop, a hidden twin ahead of the visible one, disabled select and option.
+const PAGE_THREE = `<!doctype html><html><head><meta charset="utf-8"><title>arc-control page three</title>
+<style>#veil{position:fixed;inset:0;z-index:9;background:rgba(0,0,0,.3)}</style></head>
+<body><button id="covered" onclick="document.body.dataset.covered='1'">Covered</button><div id="veil"></div>
+<div style="display:none"><button onclick="document.body.dataset.twin='hidden'">Twin</button></div>
+<button style="position:relative;z-index:10" onclick="document.body.dataset.twin='visible'">Twin</button>
+<select id="off" disabled><option>a</option><option>b</option></select>
+<select id="partial"><option>a</option><option disabled>b</option></select>
+<input id="num" type="number"><input id="cb" type="checkbox"><input id="loose">
+<form id="f" onsubmit="event.preventDefault();document.body.dataset.sent=String(Number(document.body.dataset.sent||0)+1)">
+<input id="q" name="q"><input id="need" name="need" required></form>
+<form id="g" onsubmit="event.preventDefault();document.body.dataset.gsent=String(Number(document.body.dataset.gsent||0)+1)"><input id="r" name="r"></form>
+<script>document.getElementById('r').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('g').requestSubmit();});</script></body></html>`;
+
 let urlOne = null;
 let urlTwo = null;
+let urlThree = null;
 
 /** Open a tab, hand its id to the body, and close it however the body ends. */
 async function withTab(url, body) {
@@ -96,6 +114,9 @@ describe('integration: drives the real Arc browser', () => {
     writeFileSync(two, PAGE_TWO);
     urlOne = pathToFileURL(one).href;
     urlTwo = pathToFileURL(two).href;
+    const three = join(fixtureDir, 'page-three.html');
+    writeFileSync(three, PAGE_THREE);
+    urlThree = pathToFileURL(three).href;
   });
 
   after(async () => {
@@ -235,6 +256,81 @@ describe('integration: drives the real Arc browser', () => {
 
       const clicked = await scripting.execute_javascript({ tab_id: tabId, code: 'document.body.dataset.clicked' });
       assert.equal(clicked.result, 'open', 'only the enabled button ran its handler');
+    });
+  });
+
+  it('text= prefers a visible match over a hidden twin earlier in the page', { skip }, async () => {
+    await withTab(urlThree, async (tabId) => {
+      const twin = await interact.click({ tab_id: tabId, selector: 'text=Twin', exact: true });
+      assert.equal(twin.ok, true);
+      assert.equal(twin.matches, 2);
+      const which = await scripting.execute_javascript({ tab_id: tabId, code: 'document.body.dataset.twin' });
+      assert.equal(which.result, 'visible', 'the hidden button sits first in the DOM and must not win');
+    });
+  });
+
+  it('click warns when an overlay covers the target, since no user could have clicked it', { skip }, async () => {
+    await withTab(urlThree, async (tabId) => {
+      const covered = await interact.click({ tab_id: tabId, selector: '#covered' });
+      assert.equal(covered.ok, true, 'the synthetic click still lands, and says so');
+      assert.equal(covered.coveredBy, '<div#veil>');
+      assert.match(covered.warning, /could not click/);
+    });
+  });
+
+  it('select_option refuses a disabled select and a disabled option instead of setting them', { skip }, async () => {
+    await withTab(urlThree, async (tabId) => {
+      const off = await interact.select_option({ tab_id: tabId, selector: '#off', option: 'b' });
+      assert.equal(off.ok, false);
+      const partial = await interact.select_option({ tab_id: tabId, selector: '#partial', option: 'b' });
+      assert.equal(partial.ok, false);
+      const values = await scripting.execute_javascript({ tab_id: tabId, code: "document.querySelector('#off').value + document.querySelector('#partial').value" });
+      assert.equal(values.result, 'aa', 'neither select may have changed');
+    });
+  });
+
+  it('fill refuses values and inputs that cannot hold text, instead of reporting a fill that did not land', { skip }, async () => {
+    await withTab(urlThree, async (tabId) => {
+      await assert.rejects(() => interact.fill({ tab_id: tabId, selector: '#num', value: 'abc' }), /did not accept/);
+      await assert.rejects(() => interact.fill({ tab_id: tabId, selector: '#cb', value: 'on' }), /Use click/);
+      const fine = await interact.fill({ tab_id: tabId, selector: '#num', value: '42' });
+      assert.equal(fine.ok, true);
+    });
+  });
+
+  it('fill with submit reports what really happened to the form', { skip }, async () => {
+    await withTab(urlThree, async (tabId) => {
+      const loose = await interact.fill({ tab_id: tabId, selector: '#loose', value: 'x', submit: true });
+      assert.equal(loose.ok, false, 'a field outside any form submits nothing');
+
+      const invalid = await interact.fill({ tab_id: tabId, selector: '#q', value: 'x', submit: true });
+      assert.equal(invalid.ok, false, 'a required sibling is empty, so the browser would refuse');
+      assert.equal(invalid.invalid[0].name, 'need');
+
+      await interact.fill({ tab_id: tabId, selector: '#need', value: 'y' });
+      const sent = await interact.fill({ tab_id: tabId, selector: '#q', value: 'x', submit: true });
+      assert.equal(sent.ok, true);
+      assert.equal(sent.submitted, true);
+
+      const own = await interact.fill({ tab_id: tabId, selector: '#r', value: 'x', submit: true });
+      assert.equal(own.ok, true);
+      const counts = await scripting.execute_javascript({ tab_id: tabId, code: 'document.body.dataset.sent + "/" + document.body.dataset.gsent' });
+      assert.equal(counts.result, '1/1', 'a page that submits on Enter itself must not be submitted a second time');
+    });
+  });
+
+  it('batch fails a step that reports { error } without an ok field', { skip }, async () => {
+    await withTab(urlThree, async (tabId) => {
+      const out = await scripting.batch({
+        tab_id: tabId,
+        steps: [
+          { tool: 'get_page_content', args: { selector: '#does-not-exist' } },
+          { tool: 'click', args: { selector: '#covered' } }
+        ]
+      });
+      assert.equal(out.ok, false);
+      assert.equal(out.results[0].ok, false);
+      assert.equal(out.ran, 1, 'the batch stops at the failed read');
     });
   });
 

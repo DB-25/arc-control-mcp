@@ -5,7 +5,10 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.1] - 2026-10-05
+
+The 0.3.0 theme continued: three more ways a call could report success for
+something no user could have done, each found by driving real pages.
 
 ### Fixed
 
@@ -17,6 +20,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returns that control as `control`. Found on GitHub's "Save pins" button.
 - `query_elements` and every other `describe` result report `disabled` for
   the nearest control, so a label inside a disabled button reads as disabled.
+- `text=` matching ranked a hidden element ahead of a visible one when it came
+  first in the DOM, so `click` could hit a button in a collapsed menu while the
+  visible twin never fired. Visible matches now rank ahead of hidden ones within
+  the exact and substring groups.
+- `select_option` set a disabled `<select>`, or a disabled option, which no user
+  can do. Both now fail with `ok: false` and leave the value alone.
+
+- `open_url` with `new_tab: false` and a named `tab_id` claimed that tab as the
+  agent's own. If it was the user's tab, a later `close_own_tabs` closed it.
+  Only a tab the call creates is claimed now.
+- `batch` treated a read tool's failure (`{ error }` with no `ok` field) as a
+  success and ran on, and returned `ok: true` for a batch that stopped early.
+  Both now fail the batch.
+- `fill` with `submit: true` always said `submitted: true`. It now watches for a
+  real submit event, skips `requestSubmit` when the page's own Enter handler
+  already submitted (which used to send the form twice), lists the invalid
+  fields when the form fails validation, and fails when nothing was submitted.
+- `fill` set `.value` on a checkbox, radio or button and reported success, and
+  missed a field disabled by its `<fieldset>`. It refuses both now, and fails
+  when the field rejects the value (a number input given text).
+- `press_key` accepted any key name as a silent no-op and sent `Space` as the
+  literal key "Space". Unknown names now fail, `Space` sends " ", and the
+  result reports `defaultPrevented`. The description now says plainly that a
+  synthetic key types nothing and submits nothing.
+- `click` scrolls with `behavior: "instant"`, so a page with smooth scrolling no
+  longer gets the click aimed at where the element was mid-animation.
+
+### Added
+
+- `click` checks what a real pointer would hit at the target's center before
+  clicking. When an overlay, a modal backdrop or `pointer-events: none` would
+  stop a user, the click still goes through but the result carries `coveredBy`
+  and a `warning`.
 
 ### Documented
 
@@ -270,5 +306,6 @@ Initial version.
 - Arc's raw AppleScript error codes mapped to messages that name the remedy,
   including both required macOS permissions.
 
+[0.3.1]: https://github.com/DB-25/arc-control-mcp/releases/tag/v0.3.1
 [0.3.0]: https://github.com/DB-25/arc-control-mcp/releases/tag/v0.3.0
 [0.1.0]: https://github.com/DB-25/arc-control-mcp/releases/tag/v0.1.0

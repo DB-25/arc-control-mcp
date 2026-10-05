@@ -514,7 +514,7 @@
   {
     "name": "click",
     "title": "Click",
-    "description": "Click an element. Accepts a CSS selector or \"text=Label\". Scrolls it into view and dispatches a real pointer sequence, so framework handlers fire. \"text=Label\" matches on visible text as a substring, with exact matches ranked first, so a short label also matches longer ones. Check the returned \"matches\" count, and pass exact when it is above 1. Returns urlBefore, the url as it was immediately before the click: the tab snapshot can be taken before a navigation settles, so follow with wait_for_load when the click navigates. A match inside a control (a label span in a button) is checked against that control, returned as \"control\": a disabled one fails with ok false and nothing is clicked.",
+    "description": "Click an element. Accepts a CSS selector or \"text=Label\". Scrolls it into view and dispatches a real pointer sequence, so framework handlers fire. \"text=Label\" matches on visible text as a substring, with exact matches ranked first and visible elements ahead of hidden ones, so a short label also matches longer ones. Check the returned \"matches\" count, and pass exact when it is above 1. Returns urlBefore, the url as it was immediately before the click: the tab snapshot can be taken before a navigation settles, so follow with wait_for_load when the click navigates. A match inside a control (a label span in a button) is checked against that control, returned as \"control\": a disabled one fails with ok false and nothing is clicked. When another element (a modal backdrop, an overlay) covers the target, or it has pointer-events none, the click still goes through but the result carries coveredBy and a warning.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -528,7 +528,7 @@
         },
         "nth": {
           "default": 0,
-          "description": "Which match to click when several exist, 0-based. Order is exact text matches first, then substring matches, each in DOM order.",
+          "description": "Which match to click when several exist, 0-based. For text= selectors the order is exact matches first, then substring matches, visible before hidden within each, then DOM order.",
           "type": "number"
         },
         "exact": {
@@ -557,7 +557,7 @@
   {
     "name": "fill",
     "title": "Fill Field",
-    "description": "Set the value of an input, textarea or contenteditable. Uses the native setter and fires input and change, so React and similar frameworks register it. Fails with an error naming the tag when the target cannot be filled: a heading or other non-input, a disabled or readonly field, or a <select> (use select_option for those). \"text=Label\" matches on visible text as a substring, with exact matches ranked first, so a short label also matches longer ones. Check the returned \"matches\" count, and pass exact when it is above 1.",
+    "description": "Set the value of an input, textarea or contenteditable. Uses the native setter and fires input and change, so React and similar frameworks register it. Fails with an error naming the tag when the target cannot be filled: a heading or other non-input, a disabled or readonly field, a checkbox, radio or button (use click), a <select> (use select_option), or a field that rejects the value (a number input given text). \"text=Label\" matches on visible text as a substring, with exact matches ranked first and visible elements ahead of hidden ones, so a short label also matches longer ones. Check the returned \"matches\" count, and pass exact when it is above 1.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -580,7 +580,7 @@
         },
         "submit": {
           "default": false,
-          "description": "Press Enter and request form submit afterwards. The tab usually navigates, so follow with wait_for_load: the returned tab snapshot may predate the navigation, and urlBefore reports the url from just before the key press.",
+          "description": "Press Enter, then submit the form if the page did not. Fails with ok false when nothing was submitted, or when the form fails its own validation (the invalid fields are listed). The tab usually navigates, so follow with wait_for_load: the returned tab snapshot may predate the navigation, and urlBefore reports the url from just before the key press.",
           "type": "boolean"
         },
         "exact": {
@@ -610,7 +610,7 @@
   {
     "name": "select_option",
     "title": "Select Option",
-    "description": "Choose an option in a select element, by exact option value or exact visible label. When nothing matches, the failure lists the options that do exist, so the next call can pick a real one.",
+    "description": "Choose an option in a select element, by exact option value or exact visible label. A disabled select or option fails rather than being set. When nothing matches, the failure lists the options that do exist, so the next call can pick a real one.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -643,7 +643,7 @@
   {
     "name": "press_key",
     "title": "Press Key",
-    "description": "Dispatch a key press to an element, or to the focused element when no selector is given. Handles named keys (Enter, Escape, Tab, ArrowDown) and single printable characters. Returns only a minimal identity for the element that received the key (tag plus whichever of id, name, type and aria-label exist); use query_elements when you need the full picture.",
+    "description": "Dispatch a key press to an element, or to the focused element when no selector is given. Handles named keys (Enter, Escape, Tab, ArrowDown) and single printable characters; an unknown name fails. Only the page's own key handlers react: a synthetic key types no character, moves no focus and submits no form. defaultPrevented says whether a handler took it. To type, use fill. Returns only a minimal identity for the element that received the key (tag plus whichever of id, name, type and aria-label exist); use query_elements when you need the full picture.",
     "inputSchema": {
       "type": "object",
       "properties": {

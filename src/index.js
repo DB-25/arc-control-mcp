@@ -29,10 +29,10 @@ const HOMEPAGE = 'https://github.com/DB-25/arc-control-mcp';
 const INSTRUCTIONS = `Drives the user's real Arc browser on macOS through Apple Events. Their tabs and their attention are not yours to disturb.
 
 - Call arc_status first. It reports separately what a read-only call and a changing call resolve to when you pass no tab_id.
-- Reading and scripting work fine on background tabs. Prefer passing a tab_id over switch_to_tab or focus_space, which change what the user sees.
+- Reading and scripting work fine on background tabs. Prefer passing a tab_id over switch_to_tab or focus_space, which change what the user sees. The exception is code a page loads only once something is on screen: if a control stays disabled or a list never loads in a background tab, switch_to_tab and retry.
 - A tool that CHANGES a tab never falls back to the tab the user is looking at. With no tab_id it uses a tab you opened, or is refused. Read-only tools do fall back, so a bare get_page_content reads whatever the user currently has open.
 - Always pass an explicit tab_id to close_tab. Use close_own_tabs to clean up tabs you opened.
-- Selectors are CSS, or "text=Label" which is case-insensitive SUBSTRING matching on visible text. Exact matches rank first, and every tool reports how many matched, so check that count before trusting a click. Pass exact or nth to disambiguate.
+- Selectors are CSS, or "text=Label" which is case-insensitive SUBSTRING matching on visible text. Exact matches rank first, visible ahead of hidden, and every tool reports how many matched, so check that count before trusting a click. Pass exact or nth to disambiguate.
 - Each call spawns an osascript process and costs a few hundred milliseconds. Use batch for a known sequence such as fill, fill, click, wait.
 - Tab ids are UUID strings and are not stable across a close and reopen. Re-run list_tabs rather than reusing an old id.
 - After any click or fill that navigates, call wait_for_load before reading the page.

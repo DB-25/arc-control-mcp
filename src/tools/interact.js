@@ -49,7 +49,7 @@ function disabledHint(isHidden) {
 }
 
 const TEXT_NOTE =
-  '"text=Label" matches on visible text as a substring, with exact matches ranked first, so a short label also matches longer ones. ' +
+  '"text=Label" matches on visible text as a substring, with exact matches ranked first and visible elements ahead of hidden ones, so a short label also matches longer ones. ' +
   'Check the returned "matches" count, and pass exact when it is above 1.';
 
 export const tools = [
@@ -59,11 +59,12 @@ export const tools = [
       'Click an element. Accepts a CSS selector or "text=Label". Scrolls it into view and dispatches a real pointer sequence, so framework handlers fire. ' +
       TEXT_NOTE +
       ' Returns urlBefore, the url as it was immediately before the click: the tab snapshot can be taken before a navigation settles, so follow with wait_for_load when the click navigates.' +
-      ' A match inside a control (a label span in a button) is checked against that control, returned as "control": a disabled one fails with ok false and nothing is clicked.',
+      ' A match inside a control (a label span in a button) is checked against that control, returned as "control": a disabled one fails with ok false and nothing is clicked.' +
+      ' When another element (a modal backdrop, an overlay) covers the target, or it has pointer-events none, the click still goes through but the result carries coveredBy and a warning.',
     input: z.object({
       selector: SELECTOR,
       tab_id: TAB_ID.optional(),
-      nth: NTH.describe('Which match to click when several exist, 0-based. Order is exact text matches first, then substring matches, each in DOM order.'),
+      nth: NTH.describe('Which match to click when several exist, 0-based. For text= selectors the order is exact matches first, then substring matches, visible before hidden within each, then DOM order.'),
       exact: MATCH_EXACT,
       verbose: VERBOSE
     }),
@@ -73,7 +74,7 @@ export const tools = [
     name: 'fill',
     description:
       'Set the value of an input, textarea or contenteditable. Uses the native setter and fires input and change, so React and similar frameworks register it. ' +
-      'Fails with an error naming the tag when the target cannot be filled: a heading or other non-input, a disabled or readonly field, or a <select> (use select_option for those). ' +
+      'Fails with an error naming the tag when the target cannot be filled: a heading or other non-input, a disabled or readonly field, a checkbox, radio or button (use click), a <select> (use select_option), or a field that rejects the value (a number input given text). ' +
       TEXT_NOTE,
     input: z.object({
       selector: SELECTOR,
@@ -84,7 +85,7 @@ export const tools = [
         .boolean()
         .default(false)
         .describe(
-          'Press Enter and request form submit afterwards. The tab usually navigates, so follow with wait_for_load: the returned tab snapshot may predate the navigation, and urlBefore reports the url from just before the key press.'
+          'Press Enter, then submit the form if the page did not. Fails with ok false when nothing was submitted, or when the form fails its own validation (the invalid fields are listed). The tab usually navigates, so follow with wait_for_load: the returned tab snapshot may predate the navigation, and urlBefore reports the url from just before the key press.'
         ),
       exact: MATCH_EXACT,
       verbose: VERBOSE
@@ -94,7 +95,7 @@ export const tools = [
   {
     name: 'select_option',
     description:
-      'Choose an option in a select element, by exact option value or exact visible label. ' +
+      'Choose an option in a select element, by exact option value or exact visible label. A disabled select or option fails rather than being set. ' +
       'When nothing matches, the failure lists the options that do exist, so the next call can pick a real one.',
     input: z.object({
       selector: SELECTOR.describe('CSS selector for the <select>. "text=" cannot reach a select element, so use a CSS selector here.'),
@@ -106,7 +107,8 @@ export const tools = [
   {
     name: 'press_key',
     description:
-      'Dispatch a key press to an element, or to the focused element when no selector is given. Handles named keys (Enter, Escape, Tab, ArrowDown) and single printable characters. ' +
+      'Dispatch a key press to an element, or to the focused element when no selector is given. Handles named keys (Enter, Escape, Tab, ArrowDown) and single printable characters; an unknown name fails. ' +
+      'Only the page\'s own key handlers react: a synthetic key types no character, moves no focus and submits no form. defaultPrevented says whether a handler took it. To type, use fill. ' +
       'Returns only a minimal identity for the element that received the key (tag plus whichever of id, name, type and aria-label exist); use query_elements when you need the full picture.',
     input: z.object({
       key: z.string().describe('Key name, for example Enter, Escape, Tab, ArrowDown, or a single printable character'),
@@ -160,8 +162,11 @@ export const handlers = {
        var target = control === el ? undefined : A.describe(control, ${verboseFlag(args)});
        if (A.disabled(el)) return { error: 'disabled', control: A.describe(control, ${verboseFlag(args)}), matches: els.length, hidden: document.hidden };
        var before = location.href;
+       // Checked before the click, which may well remove the overlay or the element.
+       el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+       var cover = A.coveredBy(el);
        A.click(el);
-       return { clicked: A.describe(el, ${verboseFlag(args)}), control: target, matches: els.length, urlBefore: before };`
+       return { clicked: A.describe(el, ${verboseFlag(args)}), control: target, matches: els.length, urlBefore: before, coveredBy: cover || undefined };`
     );
     if (result?.error === 'no_match') {
       return { ok: false, error: `No element matches ${args.selector}`, matches: result.matches, tab };
@@ -175,6 +180,9 @@ export const handlers = {
         matches: result.matches,
         tab
       };
+    }
+    if (result?.coveredBy) {
+      result.warning = `${result.coveredBy} sits on top of this element at its center, so a user could not click it. The synthetic click still reached it: check that something actually happened.`;
     }
     return { ok: true, ...result, tab };
   },
@@ -195,16 +203,40 @@ export const handlers = {
        var out = { filled: A.describe(el, ${verboseFlag(args)}), matches: els.length };
        ${submit
          ? `out.urlBefore = location.href;
+       // Watch for a real submit: the page's own Enter handler may submit, and
+       // then a second requestSubmit would send the form twice.
+       var seen = false;
+       var watch = function () { seen = true; };
+       document.addEventListener('submit', watch, true);
        A.key(el, 'Enter');
-       if (el.form && el.form.requestSubmit) { try { el.form.requestSubmit(); } catch (e) {} }`
+       if (!seen && el.form) {
+         if (!el.form.checkValidity()) {
+           out.invalid = Array.prototype.slice.call(el.form.elements).filter(function (f) { return f.willValidate && !f.validity.valid; })
+             .slice(0, 10).map(function (f) { return { name: f.name || f.id || f.tagName.toLowerCase(), message: f.validationMessage }; });
+         } else {
+           el.form.requestSubmit();
+         }
+       }
+       document.removeEventListener('submit', watch, true);
+       out.submitted = seen;
+       out.hasForm = !!el.form;`
          : ''}
        return out;`
     );
     if (result?.error === 'no_match') {
       return { ok: false, error: `No element matches ${args.selector}`, matches: result.matches, tab };
     }
+    if (submit && result.invalid) {
+      return { ok: false, error: 'The form failed its own validation, so it was not submitted. The field was filled.', ...result, tab };
+    }
+    if (submit && !result.submitted) {
+      const why = result.hasForm
+        ? 'Enter and requestSubmit produced no submit event.'
+        : 'The field is not in a <form> and no page handler submitted on Enter. Click the page\'s submit button instead.';
+      return { ok: false, error: `Filled, but nothing was submitted. ${why}`, ...result, tab };
+    }
     if (submit) {
-      return { ok: true, ...result, submitted: true, note: 'The tab may still be navigating. Call wait_for_load before reading the page.', tab };
+      return { ok: true, ...result, note: 'The tab may still be navigating. Call wait_for_load before reading the page.', tab };
     }
     return { ok: true, ...result, tab };
   },
@@ -216,11 +248,14 @@ export const handlers = {
        if (!el) return { error: 'no_match' };
        var tag = el.tagName.toLowerCase();
        if (tag !== 'select') return { error: 'not_select', tag: tag };
+       if (el.matches(':disabled')) return { error: 'disabled_select' };
        var want = ${JSON.stringify(args.option)};
        var chosen = null;
        for (var i = 0; i < el.options.length; i++) {
          var o = el.options[i];
          if (o.value === want || (o.text || '').trim() === want) {
+           // A user cannot pick a disabled option, and the page will not expect one.
+           if (o.disabled || (o.parentElement && o.parentElement.disabled)) return { error: 'disabled_option', text: (o.text || '').trim() };
            el.selectedIndex = i;
            chosen = { value: o.value, text: (o.text || '').trim() };
            break;
@@ -246,6 +281,12 @@ export const handlers = {
         tab
       };
     }
+    if (result?.error === 'disabled_select') {
+      return { ok: false, error: `The <select> at ${args.selector} is disabled, so nothing was selected.`, tab };
+    }
+    if (result?.error === 'disabled_option') {
+      return { ok: false, error: `The option "${result.text}" is disabled, so it was not selected.`, tab };
+    }
     if (result?.error === 'no_option') {
       return {
         ok: false,
@@ -264,7 +305,7 @@ export const handlers = {
       `var sel = ${JSON.stringify(args.selector || null)};
        var el = sel ? A.one(sel, 0, ${matchOpts(args)}) : (document.activeElement || document.body);
        if (!el) return { error: 'no_match' };
-       A.key(el, ${JSON.stringify(args.key)});
+       var prevented = A.key(el, ${JSON.stringify(args.key)});
        // Identity only: a full describe of a fallback document.body would drag
        // the page's entire innerText into the response.
        var target = { tag: el.tagName.toLowerCase() };
@@ -273,7 +314,7 @@ export const handlers = {
          var v = el.getAttribute(names[i]);
          if (v) target[names[i]] = v.slice(0, ${TARGET_ATTR_CHARS});
        }
-       return { key: ${JSON.stringify(args.key)}, target: target, usedFocusedElement: !sel };`
+       return { key: ${JSON.stringify(args.key)}, target: target, usedFocusedElement: !sel, defaultPrevented: prevented };`
     );
     if (result?.error === 'no_match') {
       // Without a selector the miss means the document had nothing to aim at.

@@ -258,9 +258,13 @@ export const handlers = {
       OPEN_TIMEOUT_MS
     );
 
-    if (result.tab) {
+    // Only a tab this call created becomes ours. Navigating a tab the caller
+    // named must not claim it, or close_own_tabs would later close the user's tab.
+    if (result.tab && result.action === 'opened new tab') {
       state.claim(result.tab.id);
       result.tab.mine = true;
+    } else if (result.tab) {
+      result.tab.mine = state.isOwned(result.tab.id);
     }
 
     return withLoad(args, result, extra);

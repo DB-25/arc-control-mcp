@@ -56,9 +56,14 @@ var A = (function () {
       if (!nested) hits.push({ el: nodes[i], exact: exact });
     }
 
+    // Visible before hidden within each group: a hidden twin earlier in the
+    // DOM (a collapsed menu, an off-screen template) must not win the click.
     var out = [];
-    for (var e = 0; e < hits.length; e++) if (hits[e].exact) out.push(hits[e].el);
-    for (var s = 0; s < hits.length; s++) if (!hits[s].exact) out.push(hits[s].el);
+    var groups = [[], [], [], []];
+    for (var e = 0; e < hits.length; e++) {
+      groups[(hits[e].exact ? 0 : 2) + (api.visible(hits[e].el) ? 0 : 1)].push(hits[e].el);
+    }
+    for (var g = 0; g < groups.length; g++) out = out.concat(groups[g]);
     return out;
   };
 
@@ -128,8 +133,21 @@ var A = (function () {
     return !!(c.closest && c.closest('[aria-disabled=true]'));
   };
 
+  // What a real pointer would hit at the element's center, when that is not
+  // the element itself: an overlay, a backdrop, or what lies beneath a
+  // pointer-events:none target. Null when the hit lands on it.
+  api.coveredBy = function (el) {
+    var p = api.center(el);
+    if (p.x < 0 || p.y < 0 || p.x > window.innerWidth || p.y > window.innerHeight) return null;
+    var hit = document.elementFromPoint(p.x, p.y);
+    // Landing anywhere inside the control the match belongs to is a fair hit.
+    if (!hit || el.contains(hit) || api.control(el).contains(hit)) return null;
+    return '<' + hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + '>';
+  };
+
   api.click = function (el) {
-    el.scrollIntoView({ block: 'center', inline: 'center' });
+    // Instant, or the center is measured mid-animation on scroll-behavior: smooth pages.
+    el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     var p = api.center(el);
     var opts = { bubbles: true, cancelable: true, view: window, clientX: p.x, clientY: p.y, button: 0 };
     ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(function (type) {
@@ -155,30 +173,45 @@ var A = (function () {
     if (tag !== 'input' && tag !== 'textarea') {
       throw new Error('<' + tag + '> is not an input, textarea or contenteditable element, so it cannot be filled.');
     }
-    if (el.disabled) throw new Error('<' + tag + '> is disabled, so it cannot be filled.');
+    // :disabled also covers a field inside <fieldset disabled>, which el.disabled misses.
+    if (el.matches(':disabled')) throw new Error('<' + tag + '> is disabled, so it cannot be filled.');
     if (el.readOnly) throw new Error('<' + tag + '> is readonly, so it cannot be filled.');
+    var type = tag === 'input' ? (el.type || 'text') : null;
+    if (/^(checkbox|radio|button|submit|reset|image|file)$/.test(type)) {
+      throw new Error('<input type=' + type + '> has no text to fill.' + (type === 'file' ? ' A file input cannot be set from a script.' : ' Use click instead.'));
+    }
     var proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
     var setter = Object.getOwnPropertyDescriptor(proto, 'value');
     el.focus();
     if (setter && setter.set) setter.set.call(el, value); else el.value = value;
+    // Number, date and similar inputs sanitise a value they cannot parse to "".
+    if (el.value !== value) {
+      throw new Error('<input type=' + type + '> did not accept ' + JSON.stringify(value) + ': its value is now ' + JSON.stringify(el.value) + '.');
+    }
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     return true;
   };
 
+  // Returns whether the page cancelled the keydown. A synthetic key has no
+  // default action: no character is typed, focus does not move, and Enter does
+  // not submit a form, so only the page's own handlers react.
   api.key = function (el, key) {
     var printable = key.length === 1;
-    var code = printable ? key.charCodeAt(0) : (KEY_CODES[key] || 0);
-    var init = { key: key, keyCode: code, which: code, bubbles: true, cancelable: true };
-    el.dispatchEvent(new KeyboardEvent('keydown', init));
-    if (code) {
-      el.dispatchEvent(new KeyboardEvent('keypress', {
-        key: key, keyCode: code, which: code, charCode: printable ? code : 0,
-        bubbles: true, cancelable: true
-      }));
+    if (!printable && !KEY_CODES[key]) {
+      throw new Error('Unknown key "' + key + '". Use a single character or one of: ' + Object.keys(KEY_CODES).join(', ') + '.');
     }
+    var code = printable ? key.charCodeAt(0) : KEY_CODES[key];
+    var eventKey = key === 'Space' ? ' ' : key;
+    var init = { key: eventKey, keyCode: code, which: code, bubbles: true, cancelable: true };
+    var down = new KeyboardEvent('keydown', init);
+    el.dispatchEvent(down);
+    el.dispatchEvent(new KeyboardEvent('keypress', {
+      key: eventKey, keyCode: code, which: code, charCode: printable || key === 'Space' ? code : 0,
+      bubbles: true, cancelable: true
+    }));
     el.dispatchEvent(new KeyboardEvent('keyup', init));
-    return true;
+    return down.defaultPrevented;
   };
 
   api.miss = function (selector) {

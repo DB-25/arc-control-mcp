@@ -22,7 +22,7 @@ things, runs JavaScript, and keeps its own tabs separate from yours.
 browser on one operating system through Apple Events. There is no screenshot
 tool, no CDP, and no headless mode. There is also no Docker image, and there
 cannot be one: Apple Events do not cross a container boundary, so a container
-has no way to reach the Arc running on your Mac. This is a 0.3.0 personal
+has no way to reach the Arc running on your Mac. This is a 0.3.1 personal
 project, and the [known limitations](#known-arc-limitations) below are real.
 
 ## Requirements

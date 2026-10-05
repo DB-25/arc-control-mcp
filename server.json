@@ -3,7 +3,7 @@
   "name": "io.github.DB-25/arc-control-mcp",
   "title": "Arc Control (macOS)",
   "description": "macOS-only MCP server for the Arc browser: tabs, navigation, page reading, DOM, scripting",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "websiteUrl": "https://github.com/DB-25/arc-control-mcp",
   "repository": {
     "url": "https://github.com/DB-25/arc-control-mcp",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "arc-control-mcp",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "transport": {
         "type": "stdio"
       },

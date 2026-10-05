@@ -1,6 +1,6 @@
 {
   "name": "arc-control-mcp",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "mcpName": "io.github.DB-25/arc-control-mcp",
   "description": "MCP server for controlling the Arc browser on macOS via JavaScript for Automation",
   "type": "module",

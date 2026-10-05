@@ -168,7 +168,8 @@ export const handlers = {
         // extra carries the client's AbortSignal, so a cancelled batch stops
         // inside the step it is on rather than only between steps.
         const value = await handler(stepArgs, extra);
-        const failed = value && value.ok === false;
+        // Read tools fail as { error } without an ok field, and that is a failure too.
+        const failed = !!value && (value.ok === false || typeof value.error === 'string');
         ran.push({ index, tool: step.tool, ok: !failed, value });
         if (failed && !args.continue_on_error) break;
       } catch (error) {
@@ -207,7 +208,8 @@ export const handlers = {
     return {
       ran: results.length,
       total: steps.length,
-      ok: results.every((r) => r.ok),
+      // A batch that stopped early did not do what was asked, even if every step it ran succeeded.
+      ok: results.length === steps.length && results.every((r) => r.ok),
       ...(truncated ? { truncated: true } : {}),
       ...(note ? { note } : {}),
       ...(batchTab ? { tab: batchTab } : {}),
