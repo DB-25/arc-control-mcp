@@ -7,12 +7,17 @@ import * as content from './tools/content.js';
 import * as interact from './tools/interact.js';
 import * as spaces from './tools/spaces.js';
 import * as scripting from './tools/scripting.js';
+import { POLICY, createGuard, openAudit, readOnlyRefusal } from './policy.js';
+import { peekTab } from './tools/shared.js';
 
 // Drop a module in here and its tools are exposed; nothing else needs changing.
 const MODULES = { tabs, navigation, content, interact, spaces, scripting };
 
 export const TOOLS = [];
 export const HANDLERS = {};
+
+// An unwritable audit file crashes here too, with the variable named.
+const guard = createGuard(POLICY, { resolveTab: peekTab, audit: openAudit(POLICY.auditLog) });
 
 // A malformed tool definition is invisible over MCP: the client just sees a
 // tool that behaves oddly. Failing at import turns that into a startup crash
@@ -84,8 +89,15 @@ for (const [name, module] of Object.entries(MODULES)) {
     // Display precedence is top-level title, then annotations.title, then name.
     // Deriving it here beats repeating the same string on 26 tool definitions.
     const { input, ...rest } = tool;
+    // Read-only mode hides every changing tool from tools/list, and still
+    // answers a call to one by name, so a client with a stale list gets a clear
+    // refusal rather than "Unknown tool".
+    if (POLICY.readOnly && tool.annotations.readOnlyHint !== true) {
+      HANDLERS[tool.name] = async () => readOnlyRefusal(tool.name);
+      continue;
+    }
     TOOLS.push({ ...rest, title: tool.title ?? tool.annotations.title, inputSchema });
-    HANDLERS[tool.name] = wrap(tool, module.handlers[tool.name]);
+    HANDLERS[tool.name] = wrap(tool, guard(tool, module.handlers[tool.name]));
   }
   for (const handlerName of Object.keys(module.handlers)) {
     if (!module.tools.some((t) => t.name === handlerName)) {

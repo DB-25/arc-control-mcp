@@ -133,7 +133,7 @@
   {
     "name": "arc_status",
     "title": "Arc Status",
-    "description": "Report Arc state: which tabs this agent owns, whether the agent space exists, what a call with no tab_id resolves to, and how many tabs a previous run of this label left behind.",
+    "description": "Report Arc state: its version, whether it is the frontmost app, which tabs this agent owns, whether the agent space exists, what a call with no tab_id resolves to, how many tabs a previous run of this label left behind, and the guardrails (read-only mode, origin rules, audit log) this server was started with. Call it first.",
     "inputSchema": {
       "type": "object",
       "properties": {},
