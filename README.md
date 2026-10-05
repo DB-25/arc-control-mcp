@@ -31,7 +31,7 @@ project, and the [known limitations](#known-arc-limitations) below are real.
 - [Arc](https://arc.net/) installed
 - Node 20 or newer
 
-One runtime dependency, `@modelcontextprotocol/sdk`. No build step.
+Two runtime dependencies, `@modelcontextprotocol/sdk` and `zod`. No build step.
 
 ## Install
 
