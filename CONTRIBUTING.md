@@ -36,6 +36,19 @@ missing. Be aware that the integration run drives your real browser: it opens
 its own tabs in the agent space and closes them again, but it is not something
 to run in the middle of other work.
 
+The CDP engine has its own integration tests, which launch Chrome for Testing
+(never Arc) with a throwaway profile and a local HTTP server:
+
+```bash
+ARC_MCP_CDP_IT=1 node --test test/cdp-integration.test.js
+ARC_MCP_CDP_IT=1 ARC_MCP_CDP_IT_HEADFUL=1 node --test test/cdp-integration.test.js  # shows a window
+```
+
+They need Node 22 or newer and a Chrome for Testing binary (`ARC_MCP_CHROME`
+overrides the default Playwright cache path). Only Arc's own tab lookup is
+replaced; the mapper, client and every tool run as shipped. Never point a test at
+a port your real Arc might be serving.
+
 CI also runs `node --check` over every file in `src/`, so a syntax error cannot
 merge. That check cannot see inside the template literals that hold the injected
 JXA and page scripts, so those are parse-checked separately in

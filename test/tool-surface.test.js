@@ -1,4 +1,4 @@
-// Structural checks on the 27 tool definitions, the part a model reads before
+// Structural checks on the tool definitions, the part a model reads before
 // it ever calls anything. These assert shape, not wording: a reworded
 // description should not fail a test, but a tool that quietly stops sharing the
 // TAB_ID schema, or a selector that stops documenting "text=", should.

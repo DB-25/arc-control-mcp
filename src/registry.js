@@ -9,9 +9,10 @@ import * as spaces from './tools/spaces.js';
 import * as scripting from './tools/scripting.js';
 import * as local from './tools/local.js';
 import * as snapshot from './tools/snapshot.js';
+import * as cdp from './tools/cdp.js';
 
 // Drop a module in here and its tools are exposed; nothing else needs changing.
-const MODULES = { tabs, navigation, content, interact, spaces, scripting, local, snapshot };
+const MODULES = { tabs, navigation, content, interact, spaces, scripting, local, snapshot, cdp };
 
 export const TOOLS = [];
 export const HANDLERS = {};

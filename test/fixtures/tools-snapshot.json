@@ -1153,5 +1153,519 @@
       "idempotentHint": true,
       "openWorldHint": true
     }
+  },
+  {
+    "name": "cdp_status",
+    "title": "CDP Status",
+    "description": "Report whether the Chrome DevTools Protocol engine can be used: the port, the browser answering on it, how many page targets it exposes, and the security warning. The engine is on by default and probes 127.0.0.1:9222 (ARC_MCP_CDP_PORT changes the port, ARC_MCP_CDP=0 disables it). Arc only serves the port when launched with --remote-debugging-port. Fails with ok false and the setup steps when nothing answers; every non-CDP tool is unaffected. Probes fresh each time, so it notices Arc being relaunched within one call.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "annotations": {
+      "title": "CDP Status",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "screenshot",
+    "title": "Screenshot",
+    "description": "Take a screenshot of a tab and return it as an image: the viewport, the whole page (full_page), or one element (selector). Needs the DevTools engine (see cdp_status). Works on a background tab without bringing it forward; pass activate true only if you want Arc to show it. A full page is capped at 16384 px tall and the result says when it was cut. Prefer jpeg with a quality for a long page, since a large PNG is a lot of tokens.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "selector": {
+          "type": "string",
+          "description": "Capture just this element instead of the viewport. CSS selector, or \"text=Label\"."
+        },
+        "nth": {
+          "default": 0,
+          "description": "Which match to capture when several exist, 0-based",
+          "type": "number"
+        },
+        "exact": {
+          "default": false,
+          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label. No effect on CSS selectors.",
+          "type": "boolean"
+        },
+        "full_page": {
+          "default": false,
+          "description": "Capture the whole scrollable page, not just the viewport. Not combinable with selector.",
+          "type": "boolean"
+        },
+        "format": {
+          "default": "png",
+          "description": "Image format",
+          "type": "string",
+          "enum": [
+            "png",
+            "jpeg"
+          ]
+        },
+        "quality": {
+          "default": 80,
+          "description": "JPEG quality, 1-100. Ignored for png.",
+          "type": "number",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "activate": {
+          "default": false,
+          "description": "Bring the tab to the front first. This changes what the user sees, so leave it off unless needed.",
+          "type": "boolean"
+        },
+        "timeout_ms": {
+          "default": 15000,
+          "description": "Give up on the capture after this long. Capped at 30000ms so the call cannot outlive a client's request timeout. To wait longer, call this again.",
+          "type": "number",
+          "maximum": 30000
+        }
+      }
+    },
+    "annotations": {
+      "title": "Screenshot",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "trusted_click",
+    "title": "Trusted Click",
+    "description": "Click an element with a real mouse event (isTrusted true), at its center after scrolling it into view. Use it when the synthetic click tool is ignored: widgets gated on event.isTrusted, autocomplete and menus that open on a real pointer, double clicks, right clicks. Needs the DevTools engine. Refuses a disabled control. Returns coveredBy when another element sits on top, because a real click lands on that element. Top-level page only: elements inside an iframe are not reachable by selector.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector, or one of: \"text=Some label\" (visible text, case-insensitive substring, exact matches ranked first); \"ref=e12\" (a ref from snapshot, re-resolved if the page re-rendered); \"role=button[name=\"Save\"]\" (ARIA or implicit role, name an exact match, or name~=\"sav\" for a substring); \"label=Email\" (the control a label names); \"placeholder=Search\""
+        },
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "nth": {
+          "default": 0,
+          "description": "Which match to act on when several exist, 0-based",
+          "type": "number"
+        },
+        "exact": {
+          "default": false,
+          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label. No effect on CSS selectors.",
+          "type": "boolean"
+        },
+        "button": {
+          "default": "left",
+          "description": "Mouse button",
+          "type": "string",
+          "enum": [
+            "left",
+            "right",
+            "middle"
+          ]
+        },
+        "click_count": {
+          "default": 1,
+          "description": "1 for a click, 2 for a double click (the page gets dblclick), 3 for a triple click (selects a paragraph)",
+          "type": "number",
+          "minimum": 1,
+          "maximum": 3
+        }
+      },
+      "required": [
+        "selector"
+      ]
+    },
+    "annotations": {
+      "title": "Trusted Click",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "trusted_type",
+    "title": "Trusted Type",
+    "description": "Type into an input, textarea or contenteditable with real input events, so autocomplete dropdowns open and frameworks see genuine typing. Needs the DevTools engine. By default the text goes in as one insertText (fast, one trusted input event). per_key sends a real keydown, keypress, input and keyup for every character, which is what search-as-you-type boxes need. With no selector it types into the element that already has focus. Refuses a disabled, readonly or non-text element. The result reports the field value afterwards (a password reports only its length).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string",
+          "description": "Text to type"
+        },
+        "selector": {
+          "type": "string",
+          "description": "Field to focus first. CSS selector, or \"text=Label\". Omit to type into the focused element."
+        },
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "nth": {
+          "default": 0,
+          "description": "Which match to act on when several exist, 0-based",
+          "type": "number"
+        },
+        "exact": {
+          "default": false,
+          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label. No effect on CSS selectors.",
+          "type": "boolean"
+        },
+        "per_key": {
+          "default": false,
+          "description": "Send keydown, keypress, input and keyup for each character instead of one insertText",
+          "type": "boolean"
+        },
+        "clear": {
+          "default": false,
+          "description": "Select the existing contents first so the typed text replaces them",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "text"
+      ]
+    },
+    "annotations": {
+      "title": "Trusted Type",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "trusted_press_key",
+    "title": "Trusted Press Key",
+    "description": "Press a key or shortcut with real key events: Enter really submits a form, Tab really moves focus, Escape closes what it closes. Accepts names (Enter, Tab, Escape, ArrowDown, F5), single characters, and modifier combinations such as Meta+A, Meta+C, Shift+Tab, Control+Shift+K. Needs the DevTools engine. Meta is Command; on macOS the editing shortcuts (Meta+A, C, V, X, Z) work because the matching editing command is sent with them. Optionally focuses a selector first. Reports the element that has focus afterwards.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "Key or combination, for example Enter, Tab, ArrowDown, Meta+A, Shift+Tab"
+        },
+        "selector": {
+          "type": "string",
+          "description": "Focus this element first. CSS selector, or \"text=Label\". Omit to press into whatever has focus."
+        },
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "nth": {
+          "default": 0,
+          "description": "Which match to act on when several exist, 0-based",
+          "type": "number"
+        },
+        "exact": {
+          "default": false,
+          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label. No effect on CSS selectors.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key"
+      ]
+    },
+    "annotations": {
+      "title": "Trusted Press Key",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "trusted_hover",
+    "title": "Trusted Hover",
+    "description": "Move a real mouse pointer over an element, so hover menus, tooltips and :hover styles appear. Needs the DevTools engine. Reports hoverApplied, whether the browser now considers the element hovered.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "CSS selector, or one of: \"text=Some label\" (visible text, case-insensitive substring, exact matches ranked first); \"ref=e12\" (a ref from snapshot, re-resolved if the page re-rendered); \"role=button[name=\"Save\"]\" (ARIA or implicit role, name an exact match, or name~=\"sav\" for a substring); \"label=Email\" (the control a label names); \"placeholder=Search\""
+        },
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "nth": {
+          "default": 0,
+          "description": "Which match to act on when several exist, 0-based",
+          "type": "number"
+        },
+        "exact": {
+          "default": false,
+          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label. No effect on CSS selectors.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "selector"
+      ]
+    },
+    "annotations": {
+      "title": "Trusted Hover",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "drag",
+    "title": "Drag",
+    "description": "Drag with a real mouse: press at the start, move in steps, release at the end. Each end is a selector (its center) or x and y in viewport pixels. Works for sliders, sortable lists, canvases, and native HTML5 drag and drop (reported as nativeDrag true). Needs the DevTools engine. Top-level page only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "from_selector": {
+          "type": "string",
+          "description": "Element to press on. CSS selector, or \"text=Label\"."
+        },
+        "from_nth": {
+          "default": 0,
+          "description": "Which from_selector match to use, 0-based",
+          "type": "number"
+        },
+        "from_x": {
+          "type": "number",
+          "description": "Start x in viewport pixels, instead of from_selector"
+        },
+        "from_y": {
+          "type": "number",
+          "description": "Start y in viewport pixels, instead of from_selector"
+        },
+        "to_selector": {
+          "type": "string",
+          "description": "Element to release on. CSS selector, or \"text=Label\"."
+        },
+        "to_nth": {
+          "default": 0,
+          "description": "Which to_selector match to use, 0-based",
+          "type": "number"
+        },
+        "to_x": {
+          "type": "number",
+          "description": "End x in viewport pixels, instead of to_selector"
+        },
+        "to_y": {
+          "type": "number",
+          "description": "End y in viewport pixels, instead of to_selector"
+        },
+        "steps": {
+          "default": 12,
+          "description": "Intermediate mouse moves between start and end",
+          "type": "number",
+          "minimum": 1,
+          "maximum": 100
+        }
+      }
+    },
+    "annotations": {
+      "title": "Drag",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "upload_file",
+    "title": "Upload File",
+    "description": "Set the files of an <input type=file>, as if chosen in the file picker. Paths must be absolute and point at existing regular files; anything else is refused, as are credential and browser-profile files (~/.ssh, ~/.aws, Arc's own profile, .env, and similar). The page receives its normal input and change events. Needs the DevTools engine. Many sites hide the real input behind a button: select the hidden input element itself.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "selector": {
+          "type": "string",
+          "description": "The file input: a CSS selector such as input[type=file], or \"text=Label\"."
+        },
+        "paths": {
+          "minItems": 1,
+          "maxItems": 20,
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Absolute paths of the files to attach"
+        },
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "nth": {
+          "default": 0,
+          "description": "Which match to act on when several exist, 0-based",
+          "type": "number"
+        },
+        "exact": {
+          "default": false,
+          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label. No effect on CSS selectors.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "selector",
+        "paths"
+      ]
+    },
+    "annotations": {
+      "title": "Upload File",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "handle_dialog",
+    "title": "Handle Dialog",
+    "description": "Accept or dismiss the JavaScript dialog (alert, confirm, prompt, beforeunload) that is blocking a tab. While one is open the page cannot run anything, so other CDP tools say so and point here. For a prompt, prompt_text is what gets entered when accepting. Needs the DevTools engine.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "accept",
+            "dismiss"
+          ],
+          "description": "accept presses OK, dismiss presses Cancel"
+        },
+        "prompt_text": {
+          "type": "string",
+          "description": "Text to enter into a prompt() dialog when accepting"
+        },
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        }
+      },
+      "required": [
+        "action"
+      ]
+    },
+    "annotations": {
+      "title": "Handle Dialog",
+      "readOnlyHint": false,
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "console_messages",
+    "title": "Console Messages",
+    "description": "Read the console output of a tab: console.log and friends, uncaught exceptions, and the browser's own messages (blocked requests, CSP violations). Newest last. Needs the DevTools engine. Capture starts the first time any CDP tool touches this tab, and CDP has no history to read back, so nothing from before that is here. Call this tool (or cdp_status then any CDP tool) before the action you want to observe.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "level": {
+          "default": "all",
+          "description": "Only entries of this level",
+          "type": "string",
+          "enum": [
+            "all",
+            "error",
+            "warning",
+            "info",
+            "log",
+            "debug"
+          ]
+        },
+        "limit": {
+          "default": 100,
+          "description": "Newest entries to return, at most 500",
+          "type": "number",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "clear": {
+          "default": false,
+          "description": "Empty this tab's console buffer after reading, so the next call shows only what is new",
+          "type": "boolean"
+        }
+      }
+    },
+    "annotations": {
+      "title": "Console Messages",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "network_requests",
+    "title": "Network Requests",
+    "description": "List the network requests a tab has made: method, url, status, type, timing and transferred size. No bodies. Headers are left out unless include_headers is set, and even then cookie, authorization and set-cookie values are redacted. Needs the DevTools engine. Note that URLs are reported as they are, query string included. Capture starts the first time any CDP tool touches this tab, and CDP has no history to read back, so nothing from before that is here. Call this tool (or cdp_status then any CDP tool) before the action you want to observe.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "tab_id": {
+          "type": "string",
+          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+        },
+        "url_contains": {
+          "type": "string",
+          "description": "Only requests whose url contains this text"
+        },
+        "type": {
+          "type": "string",
+          "description": "Only this resource type, for example Fetch, XHR, Document, Script, Image"
+        },
+        "failed_only": {
+          "default": false,
+          "description": "Only requests that failed or returned status 400 or above",
+          "type": "boolean"
+        },
+        "limit": {
+          "default": 100,
+          "description": "Newest entries to return, at most 500",
+          "type": "number",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "include_headers": {
+          "default": false,
+          "description": "Include request and response headers, with credential headers redacted",
+          "type": "boolean"
+        },
+        "clear": {
+          "default": false,
+          "description": "Empty this tab's network buffer after reading",
+          "type": "boolean"
+        }
+      }
+    },
+    "annotations": {
+      "title": "Network Requests",
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true
+    }
   }
 ]

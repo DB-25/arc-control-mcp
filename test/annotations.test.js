@@ -36,7 +36,9 @@ const ARC_METADATA_TOOLS = [
   'close_own_tabs',
   'arc_status',
   'list_spaces',
-  'focus_space'
+  'focus_space',
+  // Reports on the DevTools port, not on any page.
+  'cdp_status'
 ];
 
 // Tools that read Arc's own data files and never touch a page or Arc itself.
