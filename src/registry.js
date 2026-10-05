@@ -1,18 +1,30 @@
 import { toJSONSchema } from 'zod';
 
 import { ArcError } from './jxa.js';
+import { gateTool, withGate } from './user-activity.js';
 import * as tabs from './tools/tabs.js';
 import * as navigation from './tools/navigation.js';
 import * as content from './tools/content.js';
 import * as interact from './tools/interact.js';
 import * as spaces from './tools/spaces.js';
 import * as scripting from './tools/scripting.js';
+import * as local from './tools/local.js';
+import * as snapshot from './tools/snapshot.js';
+import * as cdp from './tools/cdp.js';
+import * as wait from './tools/wait.js';
+import * as input from './tools/input.js';
+import * as capture from './tools/capture.js';
+import { POLICY, createGuard, openAudit, readOnlyRefusal } from './policy.js';
+import { peekTab } from './tools/shared.js';
 
 // Drop a module in here and its tools are exposed; nothing else needs changing.
-const MODULES = { tabs, navigation, content, interact, spaces, scripting };
+const MODULES = { tabs, navigation, content, interact, spaces, scripting, local, snapshot, cdp, wait, input, capture };
 
 export const TOOLS = [];
 export const HANDLERS = {};
+
+// An unwritable audit file crashes here too, with the variable named.
+const guard = createGuard(POLICY, { resolveTab: peekTab, audit: openAudit(POLICY.auditLog) });
 
 // A malformed tool definition is invisible over MCP: the client just sees a
 // tool that behaves oddly. Failing at import turns that into a startup crash
@@ -64,7 +76,9 @@ function validate(moduleName, tool) {
  * acceptable.
  */
 function wrap(tool, handler) {
-  const allowActiveTab = tool.annotations.readOnlyHint === true;
+  // A read-only tool may read the tab the user is looking at, unless it asks to
+  // be treated like a changing one (it attaches a debugger to the tab it reads).
+  const allowActiveTab = tool.annotations.readOnlyHint === true && tool.ownTabOnly !== true;
   return async (args = {}, extra) => {
     const parsed = tool.input.safeParse(args ?? {});
     if (!parsed.success) {
@@ -72,7 +86,13 @@ function wrap(tool, handler) {
       // surfaces as an isError result the model can read and correct.
       throw new ArcError(`Invalid arguments for ${tool.name}. ${readableIssues(parsed.error)}`);
     }
-    return handler({ ...parsed.data, __allowActiveTab: allowActiveTab }, extra);
+    // Held back until the user pauses, for the tools that change what is on
+    // screen or which window has focus. In batch too, since a step reaches its
+    // handler through here. Reads and page scripting never wait.
+    const gate = await gateTool(tool.name, parsed.data);
+    if (!gate.proceed) return gate.result;
+    const result = await handler({ ...parsed.data, __allowActiveTab: allowActiveTab }, extra);
+    return withGate(result, gate);
   };
 }
 
@@ -83,9 +103,16 @@ for (const [name, module] of Object.entries(MODULES)) {
     const inputSchema = validate(name, tool);
     // Display precedence is top-level title, then annotations.title, then name.
     // Deriving it here beats repeating the same string on 26 tool definitions.
-    const { input, ...rest } = tool;
+    const { input, ownTabOnly, ...rest } = tool;
+    // Read-only mode hides every changing tool from tools/list, and still
+    // answers a call to one by name, so a client with a stale list gets a clear
+    // refusal rather than "Unknown tool".
+    if (POLICY.readOnly && tool.annotations.readOnlyHint !== true) {
+      HANDLERS[tool.name] = async () => readOnlyRefusal(tool.name);
+      continue;
+    }
     TOOLS.push({ ...rest, title: tool.title ?? tool.annotations.title, inputSchema });
-    HANDLERS[tool.name] = wrap(tool, module.handlers[tool.name]);
+    HANDLERS[tool.name] = wrap(tool, guard(tool, module.handlers[tool.name]));
   }
   for (const handlerName of Object.keys(module.handlers)) {
     if (!module.tools.some((t) => t.name === handlerName)) {

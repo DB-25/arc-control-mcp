@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, renameSync, mkdirSync, openSync, closeSync, rmSync } from 'fs';
+import { readFileSync, writeFileSync, renameSync, mkdirSync, openSync, closeSync, rmSync, statSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 
@@ -10,7 +10,8 @@ const STATE_DIR = process.env.ARC_MCP_STATE_DIR || join(homedir(), 'Library', 'A
 const LABEL = process.env.ARC_MCP_LABEL || 'default';
 const STATE_FILE = join(STATE_DIR, `${LABEL}.json`);
 const LOCK_FILE = `${STATE_FILE}.lock`;
-const LOCK_WAIT_MS = 2000;
+// A state-file write takes microseconds, so a lock this old was left by a dead process.
+const LOCK_STALE_MS = 2000;
 const LOCK_RETRY_MS = 5;
 
 // pids get reused, so the start time keeps a restarted agent from being
@@ -97,31 +98,73 @@ const sleepSync = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)
  * Cross-process mutex. Without it, two agents reading and writing the same
  * file lose each other's updates: measured, one agent's tab vanished from disk
  * and stopped being reapable. `wx` fails when the lock exists, which is the
- * whole mechanism. A lock older than LOCK_WAIT_MS belonged to a crashed
- * process, so it is broken rather than left to wedge every later call.
+ * whole mechanism. A lock whose file is older than LOCK_STALE_MS belonged to
+ * a crashed process, so it is broken rather than left to wedge every later call.
  */
 function withLock(fn) {
-  const deadline = Date.now() + LOCK_WAIT_MS;
   let fd;
-  for (;;) {
-    try {
-      fd = openSync(LOCK_FILE, 'wx');
-      break;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      if (Date.now() > deadline) {
-        rmSync(LOCK_FILE, { force: true });
-        fd = openSync(LOCK_FILE, 'w');
-        break;
-      }
-      sleepSync(LOCK_RETRY_MS);
-    }
-  }
+  while ((fd = openLock(LOCK_FILE, LOCK_STALE_MS)) === null) sleepSync(LOCK_RETRY_MS);
   try {
     return fn();
   } finally {
     closeSync(fd);
     rmSync(LOCK_FILE, { force: true });
+  }
+}
+
+/**
+ * One attempt at taking a lock file: the descriptor on success, null when
+ * someone else holds it. A lock is broken only when the file itself is older
+ * than `staleMs`, so how long this waiter has been waiting says nothing: a
+ * holder that is alive and working must never lose its lock to a waiter that
+ * merely ran out of patience.
+ */
+export function openLock(lockFile, staleMs) {
+  try {
+    return openSync(lockFile, 'wx');
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+  }
+  let ageMs;
+  try {
+    ageMs = Date.now() - statSync(lockFile).mtimeMs;
+  } catch (error) {
+    // Released between the two calls: the next attempt will get it.
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+  if (ageMs <= staleMs) return null;
+  rmSync(lockFile, { force: true });
+  try {
+    return openSync(lockFile, 'wx');
+  } catch (error) {
+    // Another waiter broke the same stale lock and won the race.
+    if (error.code === 'EEXIST') return null;
+    throw error;
+  }
+}
+
+// Finding or creating the agent window takes seconds, far longer than a
+// state-file write, so a lock is believed far longer before it is presumed
+// left behind by a dead process.
+const ASYNC_LOCK_STALE_MS = 30000;
+const ASYNC_LOCK_RETRY_MS = 50;
+
+/**
+ * The same cross-process mutex for work that awaits, such as finding or
+ * creating the shared agent window: two sessions must not both create one.
+ * Keep waits for the user out of `fn`: the lock is held for its whole duration.
+ */
+export async function withLockAsync(lockFile, fn, staleMs = ASYNC_LOCK_STALE_MS) {
+  let fd;
+  while ((fd = openLock(lockFile, staleMs)) === null) {
+    await new Promise((resolve) => setTimeout(resolve, ASYNC_LOCK_RETRY_MS));
+  }
+  try {
+    return await fn();
+  } finally {
+    closeSync(fd);
+    rmSync(lockFile, { force: true });
   }
 }
 
@@ -181,6 +224,7 @@ export const isOwned = (tabId) => session.owned.has(tabId);
 export const label = () => LABEL;
 export const sessionId = () => SESSION_ID;
 export const stateFile = () => STATE_FILE;
+export const stateDir = () => STATE_DIR;
 
 /**
  * Tabs left behind by dead sessions of this label. Cleanup can reap these

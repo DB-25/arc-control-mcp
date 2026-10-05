@@ -1,0 +1,15 @@
+import { execSync } from 'node:child_process';
+process.env.ARC_MCP_LABEL = 'live-check';
+const { HANDLERS: H } = await import('../src/registry.js');
+const { createAxDriver } = await import('../src/ax.js');
+const ax = createAxDriver();
+const guard = () => { try { execSync('/private/tmp/claude-501/-Users-db-Burnes-Center-Fulltime-ME/2d0e1ee7-52d8-489a-b564-da766d0888ce/scratchpad/arcprobe/guard.sh', { stdio: 'pipe' }); } catch (e) { console.log(String(e.stdout)); process.exit(3); } };
+const frames = async () => Object.fromEntries((await ax.frames()).map((f) => [f.id.slice(0, 4), [f.x, f.y, f.width, f.height, f.minimized]]));
+const front = () => execSync(`osascript -l JavaScript -e 'Application("System Events").processes.whose({frontmost:true})[0].name()'`, { encoding: 'utf8' }).trim();
+const shown = (r) => JSON.stringify(r, (k, v) => (k === 'url' || k === 'title' || k === 'snapshot') ? undefined : v).slice(0, 500);
+const before = await frames(); console.log('frames before', JSON.stringify(before), 'front', front());
+guard(); const o1 = await H.open_url({ url: 'file:///private/tmp/claude-501/-Users-db-Burnes-Center-Fulltime-ME/2d0e1ee7-52d8-489a-b564-da766d0888ce/scratchpad/arcprobe/live.html' }); console.log('open #1', shown(o1));
+guard(); const o2 = await H.open_url({ url: 'file:///private/tmp/claude-501/-Users-db-Burnes-Center-Fulltime-ME/2d0e1ee7-52d8-489a-b564-da766d0888ce/scratchpad/arcprobe/live.html' }); console.log('open #2', shown(o2));
+const after = await frames(); console.log('frames after ', JSON.stringify(after), 'front', front());
+for (const id of Object.keys(before)) if (id !== 'EC13' && JSON.stringify(before[id]) !== JSON.stringify(after[id])) console.log('!! USER WINDOW CHANGED', id);
+guard(); console.log('close', shown(await H.close_own_tabs({})));

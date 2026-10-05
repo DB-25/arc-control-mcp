@@ -48,7 +48,12 @@ let fixtureDir = null;
 if (!REASON) {
   fixtureDir = mkdtempSync(join(tmpdir(), 'arc-integration-'));
   process.env.ARC_MCP_STATE_DIR = join(fixtureDir, 'state');
-  process.env.ARC_MCP_LABEL = 'arc-control-integration';
+  process.env.ARC_MCP_LABEL ||= 'arc-control-integration';
+  // The agent window is remembered in the state directory, so a throwaway one
+  // here would create a new window on every run, and a window cannot be closed
+  // from outside. These tests use the space mode; the dedicated window has its
+  // own live checklist (see the README) and fake-driver unit tests.
+  process.env.ARC_MCP_WINDOW = 'space';
 }
 
 // Dynamic imports, because state.js reads ARC_MCP_* once at import and the
@@ -59,8 +64,9 @@ const { handlers: tabTools } = await import('../src/tools/tabs.js');
 const { handlers: content } = await import('../src/tools/content.js');
 const { handlers: interact } = await import('../src/tools/interact.js');
 const { handlers: scripting } = await import('../src/tools/scripting.js');
+const { handlers: snap } = await import('../src/tools/snapshot.js');
 // Binds batch's tool lookup, as src/index.js does at startup.
-await import('../src/registry.js');
+const { HANDLERS } = await import('../src/registry.js');
 const { ArcError } = await import('../src/jxa.js');
 const state = await import('../src/state.js');
 
@@ -91,6 +97,22 @@ const PAGE_THREE = `<!doctype html><html><head><meta charset="utf-8"><title>arc-
 <form id="g" onsubmit="event.preventDefault();document.body.dataset.gsent=String(Number(document.body.dataset.gsent||0)+1)"><input id="r" name="r"></form>
 <script>document.getElementById('r').addEventListener('keydown',function(e){if(e.key==='Enter')document.getElementById('g').requestSubmit();});</script></body></html>`;
 
+// What a model would see in a form: a label, a placeholder, a disabled button,
+// two kinds of hidden subtree, and a button that rewrites the DOM shortly after.
+const PAGE_SNAP = `<!doctype html><html><head><meta charset="utf-8"><title>arc-control snapshot page</title></head>
+<body><h1>Snapshot page</h1>
+<label for="email">Email</label><input id="email" type="email">
+<input id="find" placeholder="Search things"><input id="pw" type="password" aria-label="Password" value="hunter2">
+<button id="save" onclick="document.body.dataset.saved='1'">Save</button>
+<button id="locked" disabled>Locked</button>
+<a href="#top">Top link</a>
+<div style="display:none"><button>Display none thing</button></div>
+<div aria-hidden="true"><button>Aria hidden thing</button></div>
+<div id="slot"><button id="swap" onclick="document.body.dataset.swapped=String(Number(document.body.dataset.swapped||0)+1)">Swap me</button></div>
+<button id="later" onclick="setTimeout(function(){document.getElementById('slot').appendChild(document.createElement('hr'));document.body.dataset.late='1'},50)">Later</button>
+</body></html>`;
+
+let urlSnap = null;
 let urlOne = null;
 let urlTwo = null;
 let urlThree = null;
@@ -123,7 +145,6 @@ describe('integration: drives the real Arc browser', () => {
     if (REASON) return;
     // Safety net for a test that threw before its own cleanup ran.
     await tabTools.close_own_tabs({});
-    rmSync(fixtureDir, { recursive: true, force: true });
   });
 
   it('open_url opens a tab this agent owns, and close_own_tabs closes it again', { skip }, async () => {
@@ -423,4 +444,200 @@ describe('integration: drives the real Arc browser', () => {
       );
     });
   });
+});
+
+// Reads the user's real sidebar file, so it asserts on numbers alone and never
+// prints, logs or compares a title or URL. It opens no tabs.
+describe('integration: local data agrees with live Arc', () => {
+  // Arc writes the file periodically and other agents open tabs, so an exact
+  // match would be flaky. A sidebar item id being the live tab id is what is
+  // being proved, and that shows as most tabs matching.
+  const MIN_MATCH_RATIO = 0.8;
+
+  it('sidebar_tree item ids are the tab ids list_tabs reports', { skip }, async () => {
+    const tree = await HANDLERS.sidebar_tree({ match_live: true, include_urls: false, max_items: 2000 });
+    if (!tree.ok && /was not found/.test(tree.error)) return;
+    assert.equal(tree.ok, true, 'sidebar_tree failed on the real profile');
+    assert.equal(tree.liveError, undefined, 'could not ask Arc which tabs are open');
+
+    const live = await tabTools.list_tabs({ scope: 'all' });
+    const liveIds = new Set(live.tabs.map((t) => t.id));
+    const sidebarTabs = [];
+    const collect = (nodes) => nodes.forEach((n) => (n.kind === 'tab' ? sidebarTabs.push(n) : collect(n.children)));
+    for (const space of tree.spaces) collect([...space.pinned, ...space.unpinned]);
+    collect(tree.topApps);
+
+    const matched = sidebarTabs.filter((t) => liveIds.has(t.id)).length;
+    assert.equal(sidebarTabs.length, tree.returnedTabs);
+    assert.equal(sidebarTabs.filter((t) => t.live).length, matched, 'match_live disagrees with list_tabs');
+    assert.ok(
+      sidebarTabs.length === 0 || matched / sidebarTabs.length >= MIN_MATCH_RATIO,
+      `only ${matched} of ${sidebarTabs.length} sidebar tabs matched a live tab id`
+    );
+  });
+});
+describe('integration: snapshots and refs', () => {
+  before(() => {
+    if (REASON) return;
+    const page = join(fixtureDir, 'page-snap.html');
+    writeFileSync(page, PAGE_SNAP);
+    urlSnap = pathToFileURL(page).href;
+  });
+
+  after(async () => {
+    if (!REASON) await tabTools.close_own_tabs({});
+  });
+
+  const refOf = (text, role, name) => {
+    const found = new RegExp(`- ${role} "${name}"[^\\n]*?\\[ref=(e\\d+)\\]`).exec(text);
+    assert.ok(found, `no ${role} "${name}" line in:\n${text}`);
+    return found[1];
+  };
+  const dataset = async (tabId, key) =>
+    (await scripting.execute_javascript({ tab_id: tabId, code: `document.body.dataset.${key} || null` })).result;
+
+  it('lists roles and accessible names, and leaves hidden subtrees out', { skip }, async () => {
+    await withTab(urlSnap, async (tabId) => {
+      const out = await snap.snapshot({ tab_id: tabId });
+      assert.equal(out.ok, true);
+      assert.match(out.snapshot, /- heading "Snapshot page" \[level=1\] \[ref=e\d+\]/);
+      assert.match(out.snapshot, /- textbox "Email" \[ref=e\d+\]/, 'label[for] names the input');
+      assert.match(out.snapshot, /- textbox "Search things" \[ref=e\d+\]/, 'a placeholder names an input with no label');
+      assert.match(out.snapshot, /- button "Save" \[ref=e\d+\]/);
+      assert.match(out.snapshot, /- button "Locked" \[ref=e\d+\] \(disabled\)/);
+      assert.match(out.snapshot, /- link "Top link" \[ref=e\d+\] href="#top"/);
+      assert.doesNotMatch(out.snapshot, /Display none thing/);
+      assert.doesNotMatch(out.snapshot, /Aria hidden thing/);
+      assert.match(out.snapshot, /- textbox "Password"/);
+      assert.doesNotMatch(out.snapshot, /hunter2/, 'a password value never appears in a snapshot');
+      assert.equal(out.truncated, undefined);
+    });
+  });
+
+  it('keeps a ref for the same element across snapshots, and diff says unchanged', { skip }, async () => {
+    await withTab(urlSnap, async (tabId) => {
+      const first = await snap.snapshot({ tab_id: tabId });
+      const second = await snap.snapshot({ tab_id: tabId });
+      assert.equal(refOf(first.snapshot, 'button', 'Save'), refOf(second.snapshot, 'button', 'Save'));
+
+      const same = await snap.snapshot({ tab_id: tabId, diff: true });
+      assert.equal(same.diff, 'unchanged');
+      assert.equal(same.snapshot, 'unchanged');
+
+      await scripting.execute_javascript({ tab_id: tabId, code: "document.querySelector('#save').textContent = 'Save now'" });
+      const changed = await snap.snapshot({ tab_id: tabId, diff: true });
+      assert.equal(changed.diff, 'changes');
+      assert.match(changed.snapshot, /## added or changed\n[^\n]*button "Save now"/);
+      assert.match(changed.snapshot, /## removed\n[^\n]*button "Save"/);
+    });
+  });
+
+  it('click by ref works and reports how long the page took to settle', { skip }, async () => {
+    await withTab(urlSnap, async (tabId) => {
+      const out = await snap.snapshot({ tab_id: tabId });
+      const ref = refOf(out.snapshot, 'button', 'Save');
+      const clicked = await interact.click({ tab_id: tabId, selector: `ref=${ref}` });
+      assert.equal(clicked.ok, true);
+      assert.equal(clicked.reResolved, undefined, 'the element was never replaced');
+      assert.equal(typeof clicked.settledMs, 'number');
+      assert.equal(await dataset(tabId, 'saved'), '1');
+    });
+  });
+
+  it('settles after an action that changes the DOM a moment later', { skip }, async () => {
+    await withTab(urlSnap, async (tabId) => {
+      const clicked = await interact.click({ tab_id: tabId, selector: 'role=button[name="Later"]', settle_ms: 1000 });
+      assert.equal(clicked.ok, true);
+      assert.ok(clicked.mutations >= 1, 'the observer saw the DOM change');
+      assert.equal(await dataset(tabId, 'late'), '1', 'the delayed update had landed by the time the click returned');
+
+      const skipped = await interact.click({ tab_id: tabId, selector: '#save', settle_ms: 0 });
+      assert.equal(skipped.settledMs, undefined, 'settle_ms 0 opts out of the wait');
+    });
+  });
+
+  it('re-resolves a ref whose element was replaced by an identical one', { skip }, async () => {
+    await withTab(urlSnap, async (tabId) => {
+      const out = await snap.snapshot({ tab_id: tabId });
+      const ref = refOf(out.snapshot, 'button', 'Swap me');
+      await scripting.execute_javascript({
+        tab_id: tabId,
+        code: "var b = document.querySelector('#swap'); b.replaceWith(b.cloneNode(true)); document.querySelector('#swap').isConnected"
+      });
+      const clicked = await interact.click({ tab_id: tabId, selector: `ref=${ref}` });
+      assert.equal(clicked.ok, true);
+      assert.equal(clicked.reResolved, true);
+      assert.equal(await dataset(tabId, 'swapped'), '1', 'the click reached the new element');
+    });
+  });
+
+  it('fails a ref whose element is truly gone, saying it is stale and to snapshot again', { skip }, async () => {
+    await withTab(urlSnap, async (tabId) => {
+      const out = await snap.snapshot({ tab_id: tabId });
+      const ref = refOf(out.snapshot, 'button', 'Swap me');
+      await scripting.execute_javascript({ tab_id: tabId, code: "document.querySelector('#swap').remove()" });
+      await assert.rejects(
+        () => interact.click({ tab_id: tabId, selector: `ref=${ref}` }),
+        (error) => {
+          assert.match(error.message, /stale/);
+          assert.match(error.message, /new snapshot/);
+          return true;
+        }
+      );
+      await assert.rejects(() => interact.click({ tab_id: tabId, selector: 'ref=e9999' }), /unknown on this page/);
+
+      // wait_for_selector treats a gone ref as absent instead of throwing.
+      const gone = await interact.wait_for_selector({ tab_id: tabId, selector: `ref=${ref}`, state: 'absent', timeout_ms: 2000 });
+      assert.equal(gone.ok, true);
+    });
+  });
+
+  it('role=, label= and placeholder= selectors find the same elements a snapshot names', { skip }, async () => {
+    await withTab(urlSnap, async (tabId) => {
+      const exact = await content.query_elements({ tab_id: tabId, selector: 'role=button[name="Save"]' });
+      assert.equal(exact.total, 1);
+      const partial = await content.query_elements({ tab_id: tabId, selector: 'role=button[name~="ock"]' });
+      assert.equal(partial.total, 1);
+      assert.equal(partial.elements[0].disabled, true);
+      const none = await content.query_elements({ tab_id: tabId, selector: 'role=button[name="Aria hidden thing"]' });
+      assert.equal(none.total, 0, 'a button hidden from the accessibility tree is not matched');
+
+      const byLabel = await interact.fill({ tab_id: tabId, selector: 'label=Email', value: 'a@b.co' });
+      assert.equal(byLabel.ok, true);
+      assert.equal(byLabel.filled.attrs.id, 'email');
+      const byPlaceholder = await interact.fill({ tab_id: tabId, selector: 'placeholder=Search', value: 'milk' });
+      assert.equal(byPlaceholder.filled.attrs.id, 'find');
+
+      const locked = await interact.click({ tab_id: tabId, selector: 'role=button[name="Locked"]' });
+      assert.equal(locked.ok, false, 'honest failures still apply to a role selector');
+      await assert.rejects(() => interact.click({ tab_id: tabId, selector: 'role=button[bogus' }), /Cannot parse the role selector/);
+    });
+  });
+
+  it('interactive_only, scope, depth, boxes and max_chars shape the output, and a cut is reported', { skip }, async () => {
+    await withTab(urlSnap, async (tabId) => {
+      const flat = await snap.snapshot({ tab_id: tabId, interactive_only: true });
+      assert.doesNotMatch(flat.snapshot, /heading/);
+      assert.match(flat.snapshot, /^- textbox "Email"/m);
+
+      const scoped = await snap.snapshot({ tab_id: tabId, scope: '#slot' });
+      assert.match(scoped.snapshot, /Swap me/);
+      assert.doesNotMatch(scoped.snapshot, /Save/);
+      const missing = await snap.snapshot({ tab_id: tabId, scope: '#nope' });
+      assert.equal(missing.ok, false);
+
+      const boxed = await snap.snapshot({ tab_id: tabId, boxes: true });
+      assert.match(boxed.snapshot, /\[box=\d+,\d+,\d+,\d+\] \[(in-viewport|offscreen)\]/);
+
+      const cut = await snap.snapshot({ tab_id: tabId, max_chars: 120 });
+      assert.equal(cut.truncated, true);
+      assert.ok(cut.omittedLines > 0);
+      assert.match(cut.snapshot, /# truncated: \d+ more lines/);
+    });
+  });
+});
+
+// Last, so every describe above can still read its fixtures while it runs.
+after(() => {
+  if (!REASON) rmSync(fixtureDir, { recursive: true, force: true });
 });

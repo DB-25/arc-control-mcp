@@ -1,6 +1,9 @@
-import { ArcError } from '../jxa.js';
+import { ArcError, runJxa } from '../jxa.js';
 import { z, TAB_ID, timeoutMs, MAX_CALLER_TIMEOUT_MS } from './schema.js';
-import { read, write, runTab, runPage, sleep, state } from './shared.js';
+import { read, write, scoped, runTab, runPage, unwrapPage, sleep, state } from './shared.js';
+import { pageScript } from '../page-lib.js';
+import { windowConfig } from '../window-config.js';
+import { openInAgentWindow } from './open-dedicated.js';
 
 const POLL_MS = 250;
 const LOAD_TIMEOUT_MS = 15000;
@@ -54,14 +57,14 @@ function parseUrl(url) {
 export const tools = [
   {
     name: 'open_url',
-    description: 'Open a URL in Arc. Launches Arc if needed. New tabs go into the agent space when one exists, otherwise the main window. Arc auto-selects new tabs, so the previous selection is put back unless you pass activate.',
+    description: "Open a URL in Arc. Launches Arc if needed. New tabs go into one dedicated agent window (placed on a second display when there is one), never the user's own window, and the user's focused window is put back if Arc raised another. Waits until the user has stopped typing or moving the mouse, and fails with userActive true if they never pause: retry later. Pass activate to bring the tab to the front.",
     input: z.object({
       url: z.string().describe('URL to open'),
       new_tab: z.boolean().default(true).describe('Open a new tab. Set false to navigate an existing tab instead.'),
       tab_id: TAB_ID.describe('With new_tab false, the tab to navigate. Required in that mode unless this agent already has a tab of its own, since navigating the tab the user is looking at is refused.').optional(),
       space: z.string().describe('Space id or title to open into, overriding the agent space').optional(),
       little_arc: z.boolean().default(false).describe('Open a Little Arc window. Fire and forget: Arc does not expose these afterwards.'),
-      activate: z.boolean().default(false).describe('Bring Arc to the front and leave the new tab selected'),
+      activate: z.boolean().default(false).describe('Bring Arc to the front and leave the new tab selected. Visible to the user, so it waits for them to pause.'),
       ...WAIT_OPTIONS
     }),
     annotations: write('Open URL')
@@ -88,8 +91,18 @@ export const tools = [
     annotations: write('Reload Tab', { idempotent: true })
   },
   {
+    name: 'stop_loading',
+    description:
+      "Stop a tab that is still loading, as the browser's stop button does. Use it on a page that never finishes (a hung request, a stuck iframe, a stream): while a tab is loading, Arc does not answer scripts, so a page tool called on it hangs until it times out. " +
+      "Stopping unblocks them, and the page keeps whatever it had rendered. Reports whether the tab was loading, and fails if it still is afterwards.",
+    input: z.object({ tab_id: TAB_ID.optional() }),
+    annotations: write('Stop Loading', { idempotent: true })
+  },
+  {
     name: 'wait_for_load',
-    description: 'Poll until a tab has finished loading and the document is ready. Use after an action that triggers navigation.',
+    description:
+      'Poll until a tab has finished loading and the document is ready. Use after an action that triggers navigation. ' +
+      "Checks Arc's own loading flag as well as document.readyState. Arc does not answer scripts while a tab loads, so the flag is what lets a slow server or a hung iframe show up as ready 'loading' on the timeout, instead of as a stalled call. If the load never ends, stop_loading ends it.",
     input: z.object({
       tab_id: TAB_ID.optional(),
       timeout_ms: timeoutMs(LOAD_TIMEOUT_MS, 'Give up after this long.'),
@@ -105,15 +118,30 @@ export const tools = [
 const MIN_PROBE_MS = 1500;
 const probeBudget = (started, timeout) => Math.max(timeout - (Date.now() - started), MIN_PROBE_MS);
 
+// Arc does not answer `execute javascript` for a tab that is still loading:
+// the call hangs until the whole osascript timeout, whatever the page is doing,
+// and an iframe that never finishes counts as loading (found against a
+// localhost server that held a response open). The tab's own `loading` property
+// answers instantly, so it is read first and the page is only asked once it is
+// false. Verified in Arc 1.165 on file:// pages and on a slow http response.
+// Not a verdict on its own: a tab with nothing to load reports false while
+// readyState may still be "interactive", so the page is still asked after.
 async function readyState(args, remainingMs) {
-  // timeOrigin identifies the document instance, which is how reload_tab tells
-  // a fresh page from the one it asked Arc to replace.
-  const { result, tab } = await runPage(
-    args,
-    `return { ready: document.readyState, url: location.href, origin: performance.timeOrigin };`,
+  const out = await runJxa(
+    `const tab = target();
+     const loading = tab.loading();
+     JSON.stringify({ loading: loading, tab: describe(tab), result: loading ? null : evalJs(tab, P.page_code) });`,
+    scoped({
+      ...args,
+      // timeOrigin identifies the document instance, which is how reload_tab
+      // tells a fresh page from the one it asked Arc to replace.
+      page_code: pageScript(`return { ready: document.readyState, url: location.href, origin: performance.timeOrigin };`)
+    }),
     remainingMs
   );
-  return { ...result, tab };
+  if (out.loading) return { loading: true, ready: 'loading', url: out.tab.url, origin: null, tab: out.tab };
+  const { result, tab } = unwrapPage(out);
+  return { ...result, loading: false, tab };
 }
 
 /**
@@ -128,6 +156,12 @@ async function waitForLoad(args, { settled, requireReady = true, extra } = {}) {
   while (Date.now() - started < timeout) {
     throwIfCancelled(extra);
     last = await readyState(args, probeBudget(started, timeout));
+    // A loading reading has no document to judge yet: it can neither satisfy
+    // `settled` (origin is null) nor be called ready.
+    if (last.loading) {
+      await sleep(POLL_MS);
+      continue;
+    }
     const urlOk = !args.url_contains || (last.url || '').includes(args.url_contains);
     const isReady = !requireReady || last.ready === 'complete';
     if (isReady && urlOk && (!settled || settled(last))) {
@@ -142,7 +176,9 @@ async function waitForLoad(args, { settled, requireReady = true, extra } = {}) {
     url: last?.url ?? null,
     tab: last?.tab ?? null,
     waitedMs: Date.now() - started,
-    note: `Still not ready after ${timeout}ms. The page may be slow, or blocked on a login or dialog.`
+    note: last?.loading
+      ? `Still loading after ${timeout}ms (Arc reports the tab as loading). A slow server or an iframe that never finishes looks like this: stop_loading ends the load and keeps what rendered.`
+      : `Still not ready after ${timeout}ms. The page may be slow, or blocked on a login or dialog.`
   };
 }
 
@@ -216,7 +252,10 @@ export const handlers = {
   open_url: async (args, extra) => {
     parseUrl(args.url);
 
-    const result = await runTab(
+    // A navigation of an existing tab and a Little Arc are not agent-window
+    // work, so only a plain new tab is routed there.
+    const dedicated = windowConfig.mode === 'dedicated' && args.new_tab !== false && !args.little_arc;
+    const result = dedicated ? await openInAgentWindow(args, OPEN_TIMEOUT_MS) : await runTab(
       args,
       `if (!Arc.running()) { Arc.launch(); delay(1.5); }
        if (P.activate) Arc.activate();
@@ -260,6 +299,7 @@ export const handlers = {
 
     // Only a tab this call created becomes ours. Navigating a tab the caller
     // named must not claim it, or close_own_tabs would later close the user's tab.
+    if (result.ok === false) return result;
     if (result.tab && result.action === 'opened new tab') {
       state.claim(result.tab.id);
       result.tab.mine = true;
@@ -300,6 +340,34 @@ export const handlers = {
     }
 
     return withLoad(args, { ok: true, action: 'reloaded', from, to: moved.url, tab: moved.tab }, extra);
+  },
+
+  stop_loading: async (args) => {
+    const out = await runTab(
+      args,
+      `const tab = target();
+       const wasLoading = tab.loading();
+       Arc.stop(tab);
+       delay(0.5);
+       JSON.stringify({ wasLoading: wasLoading, loading: tab.loading(), tab: describe(tab) });`
+    );
+    const { wasLoading, loading, tab } = out;
+    if (loading) {
+      return {
+        ok: false,
+        wasLoading,
+        loading,
+        error: 'Arc accepted the stop, but the tab still reports loading half a second later. Call stop_loading again, or close the tab.',
+        tab
+      };
+    }
+    return {
+      ok: true,
+      wasLoading,
+      loading,
+      ...(wasLoading ? {} : { note: 'The tab was not loading, so there was nothing to stop.' }),
+      tab
+    };
   },
 
   wait_for_load: (args, extra) => waitForLoad(args, { extra })

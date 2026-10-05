@@ -1,13 +1,25 @@
 import { runJxa } from '../jxa.js';
 import { z, TAB_ID } from './schema.js';
+import { describePolicy } from '../policy.js';
 import { read, write, scoped, runTab, state } from './shared.js';
+import { agentWindow } from '../agent-window.js';
+import { activity } from '../user-activity.js';
+import { windowConfig } from '../window-config.js';
 
-async function snapshotAll() {
+async function snapshotAll({ withApp = false } = {}) {
   const result = await runJxa(
     `requireArc();
      const space = agentSpace();
-     JSON.stringify({ tabs: snapshot(), agentSpace: space ? { id: space.id(), title: space.title() } : null });`,
-    scoped()
+     // Two more Apple Events, so only the tool that reports them pays for them.
+     // null rather than a guess when Arc's scripting dictionary refuses either.
+     let app = null;
+     if (P.with_app) {
+       app = { version: null, frontmost: null };
+       try { app.version = Arc.version(); } catch (e) {}
+       try { app.frontmost = Arc.frontmost(); } catch (e) {}
+     }
+     JSON.stringify({ tabs: snapshot(), agentSpace: space ? { id: space.id(), title: space.title() } : null, app: app });`,
+    scoped({ with_app: withApp })
   );
   state.reconcile(result.tabs.map((t) => t.id));
   return result;
@@ -33,7 +45,7 @@ export const tools = [
   },
   {
     name: 'switch_to_tab',
-    description: 'Make a tab the active tab in its window. Changes what the user sees, so prefer reading a tab by id when you only need its content.',
+    description: 'Make a tab the active tab in its window. Changes what the user sees, so prefer reading a tab by id when you only need its content. Waits until the user has stopped typing or moving the mouse, and fails with userActive true if they never pause.',
     input: z.object({
       // Mandatory here, so the fallback wording the shared schema carries would
       // only be misleading.
@@ -64,7 +76,7 @@ export const tools = [
   },
   {
     name: 'arc_status',
-    description: 'Report Arc state: which tabs this agent owns, whether the agent space exists, what a call with no tab_id resolves to, and how many tabs a previous run of this label left behind.',
+    description: 'Report Arc state: its version, whether it is the frontmost app, which tabs this agent owns, the dedicated agent window (id, placement, display, minimized, whether Accessibility is available), the user idle time and activity gate, whether the agent space exists, what a call with no tab_id resolves to, how many tabs a previous run of this label left behind, and the guardrails (read-only mode, origin rules, audit log) this server was started with. Call it first.',
     // strictObject, so the generated schema keeps additionalProperties: false.
     input: z.strictObject({}),
     annotations: read('Arc Status', { openWorld: false })
@@ -73,7 +85,13 @@ export const tools = [
 
 export const handlers = {
   arc_status: async () => {
-    const { tabs, agentSpace } = await snapshotAll();
+    const { tabs, agentSpace, app } = await snapshotAll({ withApp: true });
+    // Read-only and best effort: a failing Accessibility query must not hide
+    // the tab report that was asked for.
+    const [windowStatus, userActivity] = await Promise.all([
+      agentWindow.status().catch((error) => ({ mode: windowConfig.mode, error: error.message })),
+      activity.status()
+    ]);
     const owned = new Set(state.ownedIds());
     const active = tabs.find((t) => t.isActive);
     // Mirrors target() in jxa.js: the agent's own tab only counts while it is
@@ -82,33 +100,45 @@ export const handlers = {
     const currentTabId = state.currentTabId();
     const ownTab = (currentTabId && tabs.find((t) => t.id === currentTabId)) || null;
     return {
+      arc: app,
+      guardrails: describePolicy(),
       label: state.label(),
       // Ownership is per session, so two agents can share a label without
       // seeing each other's tabs. The file is where a restart looks for leaks.
       sessionId: state.sessionId(),
       stateFile: state.stateFile(),
-      isolation: agentSpace ? 'space' : 'shared-window',
+      isolation: windowConfig.mode === 'dedicated' ? 'agent-window' : agentSpace ? 'space' : 'shared-window',
+      // Where agent tabs go, and whether Accessibility lets the server place the
+      // window and keep the user's focus.
+      agentWindow: windowStatus,
+      // The gate that holds back anything visible while the user is typing.
+      userActivity,
       agentSpace,
       agentSpaceName: state.AGENT_SPACE,
       // A read-only tool and one that changes a tab no longer resolve the same
       // way once this agent owns no tab, so each gets its own answer rather
-      // than one reason that is only half true.
-      resolvesTo: ownTab
-        ? {
-            readOnly: { reason: "this agent's current tab", tab: ownTab },
-            mutating: { reason: "this agent's current tab", tab: ownTab }
-          }
-        : {
-            readOnly: {
-              reason: 'no agent tab, so a read-only tool falls back to the tab the user is looking at',
-              tab: active || null
-            },
-            mutating: {
-              reason:
-                "no agent tab, so a tool that changes a tab is refused rather than acting on the user's tab. Pass a tab_id from list_tabs, or call open_url first.",
-              tab: null
+      // than one reason that is only half true. screenshot, console_messages
+      // and network_requests read but attach a debugger, so they follow the
+      // "mutating" answer (see ownTabOnly in registry.js).
+      resolvesTo: {
+        ...(ownTab
+          ? {
+              readOnly: { reason: "this agent's current tab", tab: ownTab },
+              mutating: { reason: "this agent's current tab", tab: ownTab }
             }
-          },
+          : {
+              readOnly: {
+                reason: 'no agent tab, so a read-only tool falls back to the tab the user is looking at',
+                tab: active || null
+              },
+              mutating: {
+                reason:
+                  "no agent tab, so a tool that changes a tab is refused rather than acting on the user's tab. Pass a tab_id from list_tabs, or call open_url first.",
+                tab: null
+              }
+            }),
+        readsThatResolveAsMutating: ['screenshot', 'console_messages', 'network_requests']
+      },
       ownTabs: tabs.filter((t) => owned.has(t.id)),
       staleTabCount: state.staleIds().length,
       otherTabCount: tabs.filter((t) => !owned.has(t.id)).length

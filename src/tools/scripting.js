@@ -1,6 +1,7 @@
 import { z, TAB_ID } from './schema.js';
 import { write, runPage } from './shared.js';
 import { ArcError } from '../jxa.js';
+import { omitImage } from '../result.js';
 
 // Cumulative budget for everything batch reports back. Individual read tools cap
 // themselves at 20000 characters each, so five of them already overshoot what a
@@ -167,7 +168,7 @@ export const handlers = {
       try {
         // extra carries the client's AbortSignal, so a cancelled batch stops
         // inside the step it is on rather than only between steps.
-        const value = await handler(stepArgs, extra);
+        const value = omitImage(await handler(stepArgs, extra));
         // Read tools fail as { error } without an ok field, and that is a failure too.
         const failed = !!value && (value.ok === false || typeof value.error === 'string');
         ran.push({ index, tool: step.tool, ok: !failed, value });

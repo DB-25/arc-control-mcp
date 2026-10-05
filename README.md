@@ -19,17 +19,18 @@ instead of a fresh automation profile. It reads pages, fills forms, clicks
 things, runs JavaScript, and keeps its own tabs separate from yours.
 
 **What it is not:** a cross-platform or cross-browser tool. It drives one
-browser on one operating system through Apple Events. There is no screenshot
-tool, no CDP, and no headless mode. There is also no Docker image, and there
+browser on one operating system, through Apple Events, plus an optional
+[DevTools engine](#cdp-engine) for screenshots, trusted input and
+console/network capture. There is no headless mode. There is also no Docker image, and there
 cannot be one: Apple Events do not cross a container boundary, so a container
-has no way to reach the Arc running on your Mac. This is a 0.3.1 personal
+has no way to reach the Arc running on your Mac. This is a 0.4.0 personal
 project, and the [known limitations](#known-arc-limitations) below are real.
 
 ## Requirements
 
 - macOS
 - [Arc](https://arc.net/) installed
-- Node 20 or newer
+- Node 20 or newer (the [CDP tools](#cdp-engine) need Node 22 or newer, for its built-in `WebSocket`; they fail with a clear message on Node 20 and everything else keeps working)
 
 Two runtime dependencies, `@modelcontextprotocol/sdk` and `zod`. No build step.
 
@@ -170,6 +171,13 @@ know to look here.
 Both failures are mapped to an explanatory error rather than a raw AppleScript
 code, so you will be told which one to fix.
 
+A third, **optional** one is Accessibility (System Settings > Privacy & Security
+> Accessibility, for the same app, and Automation for System Events). It is what
+lets the server place the agent window on a second display and put your window
+back in front if Arc raised another. Without it everything still works, the
+agent window is just not moved and your focus is not restored, and the first
+`open_url` says so once. The user-activity gate below needs no permission.
+
 ## Why not just reuse the Chrome server
 
 Arc's scripting dictionary looks like Chrome's but differs in ways that break
@@ -199,7 +207,9 @@ is not disturbed, but nothing is walled off.
   reading the page you already have open is useful and harmless. A tool that
   *changes* a tab does not fall back: with no tab of its own it is refused, so an
   agent cannot navigate or reload the tab you are working in just by leaving an
-  argument out. Pass a `tab_id` to address any tab deliberately.
+  argument out. The CDP reads `screenshot`, `console_messages` and
+  `network_requests` follow the changing-tool rule too, since they attach a
+  debugger. Pass a `tab_id` to address any tab deliberately.
 - **Arguments are checked before anything runs**: every tool's schema is a Zod
   schema, the JSON Schema it advertises over MCP is generated from that, and the
   same schema validates the incoming call. A wrong type comes back as
@@ -209,10 +219,10 @@ is not disturbed, but nothing is walled off.
   `close_own_tabs` exists for cleanup. No tool refuses a tab you name with an
   explicit `tab_id`. The one refusal above is about an unnamed tab, not a named
   one.
-- **No focus stealing**: Arc auto-selects a newly created tab, so `open_url`
-  puts the previous selection back, and only when Arc actually took it. If the
-  user switched tabs while the page was opening, their choice stands. Pass
-  `activate: true` to opt out.
+- **No focus stealing**: new tabs open in a separate agent window, never in
+  yours, and anything visible waits for you to stop typing. See
+  [The agent window](#the-agent-window-and-the-activity-gate). Pass
+  `activate: true` to opt out of the quiet behaviour.
 - **Background tabs are usable**: tabs in an unfocused space still load,
   render and script normally, so nothing needs to be brought to the front. The
   exception is code a page loads only once something is on screen: see
@@ -235,7 +245,7 @@ loses nothing but a few wasted calls.
 
 ## Tools
 
-26 tools in six modules.
+50 tools in twelve modules.
 
 ### Tabs
 
@@ -243,19 +253,20 @@ loses nothing but a few wasted calls.
 |---|---|
 | `list_tabs` | Every tab, or narrow with `scope: "own"`, `query`, `space`, `window_id`. Rows are flagged `mine` and `isActive`. |
 | `get_current_tab` | The tab a call with no `tab_id` would act on. |
-| `switch_to_tab` | Make a tab active in its window. `activate` also brings Arc to the front. |
+| `switch_to_tab` | Make a tab active in its window. `activate` also brings Arc to the front. Waits for you to stop typing. |
 | `close_tab` | Close one tab. |
 | `close_own_tabs` | Close every tab this agent opened, leaving the user's alone. `include_stale` also closes tabs leaked by a dead previous run of the same label. |
-| `arc_status` | Owned tabs, whether the agent space exists, what a call with no `tab_id` resolves to (reported separately for read-only and for changing tools), and how many stale tabs a previous run left behind. |
+| `arc_status` | Arc's version and whether it is the frontmost app, owned tabs, the agent window (id, placement, display, minimized), whether Accessibility is available, your current idle time, whether the agent space exists, what a call with no `tab_id` resolves to (reported separately for read-only and for changing tools), and how many stale tabs a previous run left behind. |
 
 ### Navigation
 
 | Tool | Purpose |
 |---|---|
-| `open_url` | Open a URL, launching Arc if needed. Options for `new_tab`, target `space`, `little_arc`, `activate`, `wait_until_loaded`. |
+| `open_url` | Open a URL in the agent window, launching Arc if needed. Waits for you to stop typing, and reports `focusRestored` and `waitedForUserMs`. Options for `new_tab`, target `space`, `little_arc`, `activate`, `wait_until_loaded`. |
 | `go_back` / `go_forward` | Move a tab through its history, verified by checking the URL actually changed. |
 | `reload_tab` | Reload a tab. |
-| `wait_for_load` | Poll until the document is ready, optionally until the URL contains a substring. |
+| `wait_for_load` | Poll until the document is ready, optionally until the URL contains a substring. Also reads Arc's `loading` flag (see [Loading tabs](#loading-tabs-and-stop_loading)), so a hung page shows up as `ready: "loading"` instead of a stalled call. |
+| `stop_loading` | Press the stop button on a tab that will not finish loading, which also unblocks every page tool on it. |
 
 ### Content
 
@@ -267,23 +278,41 @@ loses nothing but a few wasted calls.
 | `get_links` | Links with text and resolved href, filterable by substring. |
 | `get_page_info` | Title, URL, ready state, meta description, a headings outline, and counts of links, forms, inputs, buttons and iframes. A cheap first look at an unfamiliar page. |
 
+### Snapshots
+
+| Tool | Purpose |
+|---|---|
+| `snapshot` | The page as a compact tree of roles, accessible names and `[ref=e12]` refs. Options: `interactive_only`, `scope`, `depth`, `max_chars` (a cut is always reported), `boxes`, `diff`. See [Snapshots and refs](#snapshots-and-refs). |
+
 ### Interaction
 
 | Tool | Purpose |
 |---|---|
-| `click` | Scroll into view and dispatch a real pointer sequence, so framework handlers fire. `nth` picks among matches. |
-| `fill` | Set an input, textarea or contenteditable through the native setter, firing `input` and `change`. `submit: true` presses Enter afterwards. |
-| `select_option` | Choose an option by value or visible label. |
-| `press_key` | Dispatch a key press to an element or the focused element. |
+| `click` | Scroll into view and dispatch a real pointer sequence, so framework handlers fire. `nth` picks among matches. Waits for the DOM to settle and reports `settledMs`. |
+| `fill` | Set an input, textarea or contenteditable through the native setter, firing `input` and `change`. `submit: true` presses Enter afterwards. Also settles. |
+| `select_option` | Choose an option by value or visible label. Also settles. |
+| `press_key` | Dispatch a key press to an element or the focused element. Also settles. |
 | `scroll` | Scroll the page by direction and amount, or scroll one element into view. |
 | `wait_for_selector` | Poll until an element is `present`, `visible` or `absent`. |
+| `wait_for_text` | Poll until any of several strings, or a regex, appears in or disappears from the page's visible text or a scope selector. |
+| `fill_form` | Fill up to 50 fields in one call, each through the same checks as `fill`. Reports every field, is `ok: false` when any failed, and names which. Values are not echoed. |
+| `hover` | Send `pointerover`, `pointerenter`, `mouseover`, `mouseenter`, `pointermove` and `mousemove` at an element's center. Reports `coveredBy` like `click`. CSS `:hover` styles do not change: that is browser state a script cannot set. |
+| `type` | Type one character at a time (`keydown`, `keypress`, `beforeinput`, a native-setter append, `input`, `keyup`), for widgets that react to per-character events. Verifies the field afterwards: `ok: false` when characters did not go in, and the final value is reported (only its length for a password). `delay_ms` spaces the characters out. |
+
+### Observation
+
+| Tool | Purpose |
+|---|---|
+| `capture_start` | Start recording console output, uncaught errors, unhandled rejections, and `fetch` and `XMLHttpRequest` calls (method, url, status, duration; never bodies or headers). Fails with `ok: false` when the page's CSP blocks it. See [Console and network capture](#console-and-network-capture). |
+| `capture_read` | Return what was recorded, oldest first, optionally clearing what it returned. Fails when no recorder is running rather than returning an empty list. |
+| `network_entries` | The page's requests from the browser's own resource timing. No recorder, so it works under any CSP, with the limits listed below. |
 
 ### Spaces
 
 | Tool | Purpose |
 |---|---|
 | `list_spaces` | Spaces in the front window with tab counts, which is active, and `topAppCount` for the sidebar favourites that belong to no space. |
-| `focus_space` | Switch the front window to a space. Rarely needed: unfocused tabs are fully scriptable. |
+| `focus_space` | Switch the front window to a space. Rarely needed: unfocused tabs are fully scriptable. Waits for you to stop typing. |
 
 ### Scripting
 
@@ -301,6 +330,101 @@ page can do. `openWorldHint` is true for everything that touches page content,
 and false only for the tools that read or move Arc's own tab and space
 bookkeeping.
 
+### Local data
+
+Read Arc's own files instead of driving Arc: see [Reading Arc's local data](#reading-arcs-local-data).
+All four are read-only, never touch a page, and answer in milliseconds.
+
+| Tool | Purpose |
+|---|---|
+| `sidebar_tree` | Every space with pinned items (folders nested) and unpinned tabs, plus top apps. Each tab has `id` (the `tab_id` `list_tabs` reports), `title`, `url`, `lastActiveAt`. `space`, `max_items`, `include_urls`, and `match_live` to mark each tab open or not. |
+| `find_stale_tabs` | Tabs idle for `days` (default 7), oldest first, with space and `pinned` / `unpinned` / `topApp`. Also reports exact duplicate URLs across the sidebar. |
+| `search_archive` | Search archived and closed tabs by text, newest first. `reason` narrows to `auto` or `manual`, `since_days` to a window. |
+| `search_history` | Search browsing history by text and time window. **Off unless `ARC_MCP_ALLOW_HISTORY=1`.** |
+
+### CDP engine
+
+> **Security warning.** This engine talks to Arc over the Chrome DevTools
+> Protocol, and Arc only serves that when **you** launch it with
+> `--remote-debugging-port`. The port is **unauthenticated** and bound to
+> loopback: any process running as you on this Mac can then drive Arc through
+> it, read every page, and use your signed-in sessions, with no prompt. Arc never
+> does this by default, nothing here turns it on for you, and a Sparkle update
+> relaunches Arc without the flag. Turn the engine off with `ARC_MCP_CDP=0`, and
+> close the port by relaunching Arc normally. Read
+> [scripts/arc-cdp-setup.md](scripts/arc-cdp-setup.md) before enabling it.
+
+Everything above works through Apple Events and injected JavaScript, which has
+three hard limits: every event is synthetic (`isTrusted` false), there are no
+screenshots, and a page's console and network are invisible. The CDP engine
+removes them. It is **on by default in the server but inert until Arc exposes
+the port**: the first CDP tool probes `127.0.0.1:9222` (a failed probe is
+remembered for 10 seconds, so it is never paid for per call). If nothing
+answers, every CDP tool returns `ok: false` with the setup steps, and every
+other tool behaves exactly as before.
+
+Setup is three commands (details, the optional launchd healer and the security
+trade-off are in [scripts/arc-cdp-setup.md](scripts/arc-cdp-setup.md)):
+
+```bash
+# 1. Quit Arc (Cmd-Q). It restores your tabs.
+open -a Arc --args --remote-debugging-port=9222    # 2. relaunch with the flag
+curl -s 127.0.0.1:9222/json/version                 # 3. verify
+arc-control-mcp --check-cdp                         # or probe with the CLI, changing nothing
+```
+
+How it fits together:
+
+- **Tabs still come from Apple Events.** CDP only attaches to existing pages;
+  it never creates a target (`Target.createTarget` crashes Arc).
+- **A tab is mapped by a nonce, not by URL or title.** The Apple Event side
+  writes a one-time random value into the page's DOM
+  (`data-arc-mcp-tab`), and the CDP side looks for it. A target is used only
+  after the nonce is found in it, so a different Chromium listening on 9222 can
+  never be driven by mistake. Only targets at the tab's own address (fragment and
+  trailing slash ignored) are probed, once more after a short wait in case a
+  redirect was still settling, and a target on an origin your
+  [guardrails](#guardrails) forbid is never probed at all. The mapping is cached
+  per tab and revalidated on every use, since a navigation drops the attribute.
+- **Refs and semantic selectors work here too.** `ref=e12`, `role=`, `label=` and
+  `placeholder=` are resolved first on the Apple Event side, where the ref table
+  lives (CDP cannot see Arc's isolated world), which stamps the element with a
+  one-time `data-arc-mcp-target` attribute. The DevTools call then acts on that
+  element and the attribute is removed afterwards. A stale ref fails exactly as in
+  `click`, and `reResolved` is reported.
+- **Tab rules are unchanged.** `tab_id` works as elsewhere, and the tools that
+  change a tab never fall back to the tab you are looking at. `screenshot`,
+  `console_messages` and `network_requests` read, but they attach a debugger, so
+  with no `tab_id` they follow the same rule: a tab the agent opened, or a
+  refusal, never the tab you are on.
+- **Capture starts at first attach.** `console_messages` and `network_requests`
+  only see what happened after a CDP tool first touched the tab. CDP has no
+  history to read back, so call one before the action you want to observe.
+- **Nothing sensitive is kept.** No request or response bodies, and headers are
+  opt-in with `cookie`, `authorization`, `set-cookie` and any header whose name
+  has `token`, `secret`, `key`, `session` or `signature` in it, or starts with
+  `x-auth`, redacted as they arrive. URLs are shown without their query string
+  and fragment unless `include_query` is set, since queries often carry tokens.
+
+| Tool | Purpose |
+|---|---|
+| `cdp_status` | Whether the engine can be used: port, browser, page target count, the security warning. `ok: false` with setup steps when nothing answers. |
+| `screenshot` | PNG or JPEG (`quality`) as MCP image content: the viewport, `full_page` (capped at 16384 px), or one element by `selector`. Works on a background tab without bringing it forward; `activate: true` is the only way it brings one forward, and then it waits for you to pause like `open_url` does and puts your window and application back afterwards (`focusRestored`). |
+| `trusted_click` | Real mouse click (`isTrusted` true) at the element center after scrolling it into view. `button`, `click_count` (2 gives a `dblclick`). Refuses a disabled control; reports `coveredBy`. |
+| `trusted_type` | Real typing. One `insertText` by default, or `per_key: true` for keydown, keypress, input and keyup per character (search-as-you-type). `clear` replaces the contents. Fails with `ok: false`, typing nothing, when the field does not take focus. |
+| `trusted_press_key` | Real key events with modifiers: `Enter` submits a form, `Tab` moves focus, `Meta+A` selects all. Reports the focused element afterwards. |
+| `trusted_hover` | Real pointer move; reports whether `:hover` applied. |
+| `drag` | Press, move in steps, release, between selectors or coordinates. Handles native HTML5 drag and drop. |
+| `upload_file` | Set a file input from absolute paths. Refuses relative, missing, non-regular, credential, shell-history, mail and browser-profile paths (`~/.ssh`, `~/.aws`, Arc and Chrome profiles, Messages, Mail, Safari, Keychains, `.env` and `.env.*`, `.zsh_history`, `.bash_history`, and similar), whatever the letter case of the path. |
+| `handle_dialog` | Accept or dismiss an `alert`, `confirm`, `prompt` or `beforeunload`. Other tools report an open dialog instead of hanging. |
+| `console_messages` | Buffered `console.*`, uncaught exceptions and browser log entries, filterable by `level`. |
+| `network_requests` | Method, url (no query string unless `include_query`), status, type, timing and size of each request. `include_headers` is opt-in and redacted. No bodies. |
+
+Limits worth knowing: element selectors reach the top-level document only, not
+iframes; a `Meta+` shortcut is sent with its editing command because macOS
+handles those in the menu bar, not the page; and a JavaScript dialog blocks all
+page access until `handle_dialog` clears it.
+
 ### Selectors
 
 Every selector argument accepts either:
@@ -313,6 +437,13 @@ Every selector argument accepts either:
   single element report how many matched, so a vague label is visible rather
   than silent; pass `exact: true` to require the whole text, or `nth` to pick a
   different match.
+
+- **`ref=e12`**, a ref from `snapshot`.
+- **`role=button[name="Save"]`**, an ARIA or implicit role with an exact accessible
+  name, or `role=button[name~="sav"]` for a case-insensitive substring. Elements
+  hidden from the accessibility tree are not matched.
+- **`label=Email`** and **`placeholder=Search`**, the control a label names or the
+  field carrying that placeholder. Substring, exact matches first, like `text=`.
 
 `execute_javascript` takes either a bare expression (`document.title`) or a
 statement body (`const rows = [...]; return rows.length`). Which one it used is
@@ -327,6 +458,55 @@ The `form` field matters because it is what makes a legitimate `null`
 distinguishable from a script that failed, which used to be impossible. If a value
 has no useful JSON representation, for example a DOM node or `window`, the
 response carries a `note` explaining that rather than a bare `{}`.
+
+### Snapshots and refs
+
+`snapshot` reads a page the way a screen reader would, and gives every element a
+ref, so a model can act on what it read instead of guessing selectors:
+
+```
+- heading "Sign in" [level=1] [ref=e3]
+- textbox "Email" [ref=e4] value="a@b.co" (required)
+- button "Sign in" [ref=e5] (disabled)
+```
+
+Then `click` with `selector: "ref=e5"`. Every tool that takes a selector accepts
+a ref, and also `role=`, `label=` and `placeholder=` forms.
+
+- Roles come from ARIA or the element's implicit role. Names come from
+  `aria-labelledby`, `aria-label`, a `<label>`, `alt`, `title`, `placeholder` and
+  text content, capped at 100 characters. States show as `(checked, disabled,
+  expanded, selected, required)`. Password values are never printed.
+- Hidden subtrees (`display: none`, `aria-hidden`, `inert`) are skipped, wrappers
+  with no name are folded away, and open shadow roots and same-origin iframes are
+  walked. A cross-origin frame is marked as not inspected.
+- Refs are stable: the same element keeps its ref across snapshots. If the page
+  re-renders and replaces an element with an identical one (same role, name and
+  position among identical siblings), the old ref is re-resolved and the result
+  carries `reResolved: true`. If the element is gone, or the number of identical
+  siblings changed so the match would be a guess, the call fails and says the ref
+  is stale and to snapshot again. `wait_for_selector` with `state: "absent"` treats
+  a gone ref as absent.
+- `diff: true` returns `unchanged`, or the added or changed and removed lines,
+  against this tab's previous snapshot with the same options.
+- `boxes: true` adds `[box=x,y,w,h]` and `[in-viewport]` or `[offscreen]`, measured
+  with `getBoundingClientRect`, since background tabs never run an
+  `IntersectionObserver`.
+
+Limits: refs belong to one document, so after a navigation snapshot again. A
+closed shadow root cannot be read. Ref re-resolution matches on role and name, so
+if rows with identical labels are reordered a ref can land on a twin, and
+`reResolved` is the signal to check.
+
+### Settling after an action
+
+`click`, `fill`, `select_option` and `press_key` start a `MutationObserver`, act,
+and then poll until the DOM has been quiet for `settle_ms` (default 300, `0` to
+skip) or 1500 ms have passed. The result carries `settledMs` (when the last change
+happened, relative to the action), `settled` and `mutations`. A page still
+changing at the cap reports `settled: false`. The wait costs one extra
+`osascript` round trip, and in a background tab the browser throttles page timers,
+so a delayed update can still arrive after `settled: true`.
 
 ### The page helper library
 
@@ -355,34 +535,237 @@ repeated only when it actually changes mid-batch.
 Tab ids are UUID strings and are not stable across a close and reopen, so call
 `list_tabs` rather than reusing an old one.
 
+## Reading Arc's local data
+
+Arc keeps its sidebar, archive and history in files under
+`~/Library/Application Support/Arc/`. Four tools read them directly. That gives
+you what Apple Events cannot report (pinned versus unpinned, folders, when a tab
+was last active, the archive) and does it in milliseconds rather than the
+seconds an Apple Events walk of every tab takes.
+
+| File | Used by |
+|---|---|
+| `StorableSidebar.json` | `sidebar_tree`, `find_stale_tabs` |
+| `StorableArchiveItems.json` | `search_archive` |
+| `User Data/Default/History` (Chromium SQLite) | `search_history` |
+
+What to know before relying on them:
+
+- **They lag.** Arc writes these files periodically, not on every change, so a
+  tab opened, closed or moved in the last minute or so may be missing or stale.
+  Every result carries `asOf`, the file's modification time, and a note saying so.
+  For the live truth use `list_tabs`.
+- **Ids line up.** A sidebar item's `id` is the `tab_id` that `list_tabs` reports,
+  so a result from `find_stale_tabs` can go straight to `close_tab`. `sidebar_tree`
+  with `match_live: true` checks each tab against the open ones.
+- **They fail loudly.** A missing file, invalid JSON, or a file format version this
+  server was not written for (sidebar and archive: version 1) returns `ok: false`
+  with the reason, never a guessed answer. A history database whose tables lack
+  the columns it reads fails the same way.
+- **They only read.** Nothing here writes to Arc's files. History, which Arc locks
+  while it runs, is read from a temporary copy that is deleted before the call
+  returns, using the `sqlite3` that ships with macOS at `/usr/bin/sqlite3`. No
+  dependency is added.
+- **Dates.** Arc stores seconds since 2001; results are ISO 8601 UTC.
+
+### Privacy
+
+These files are a complete record of what the user reads. Tab titles and URLs go
+into the model's context, and from there to wherever your client sends it.
+
+- `sidebar_tree` takes `include_urls: false` for a smaller, less revealing result.
+- `search_history` is **opt-in**. Without `ARC_MCP_ALLOW_HISTORY=1` in the
+  server's environment it returns `ok: false` and says how to enable it:
+
+  ```
+  claude mcp add arc --scope user -e ARC_MCP_ALLOW_HISTORY=1 -- npx -y arc-control-mcp@latest
+  ```
+
+  It only reads the `Default` profile unless you pass `profile` (a folder name
+  under `User Data`, such as `Profile 1`). Hidden pages (redirects, subframes) are
+  left out. Results are capped, `limit` defaults to 25 and tops out at 500.
+- Set `ARC_MCP_ARC_DATA_DIR` to point the tools at another directory, for example
+  a copy, or a fixture directory when testing.
+
 ## Environment variables
 
 | Variable | Default | Effect |
 |---|---|---|
 | `ARC_MCP_LABEL` | `default` | Names this agent's tab ownership. Two agents with different labels never see each other's owned tabs. |
-| `ARC_MCP_SPACE` | `Agent` | The Arc space new tabs open into, when a space with that name exists. |
+| `ARC_MCP_SPACE` | `Agent` | With `ARC_MCP_WINDOW=space`, the Arc space new tabs open into, when a space with that name exists. |
+| `ARC_MCP_WINDOW` | `dedicated` | `dedicated`: agent tabs live in one separate agent window. `space`: the old behaviour, tabs go into the `Agent` space of your own window. |
+| `ARC_MCP_WINDOW_PLACEMENT` | `auto` | Where the agent window goes: `auto` (the largest non-main display, otherwise leave it where Arc puts it), `second-display`, `minimized` (experimental), `none`. Needs Accessibility, and is applied once, when the window is created. |
+| `ARC_MCP_IDLE_MS` | `1500` | How long you must have been idle before the server does anything visible. `0` turns the gate off. |
+| `ARC_MCP_IDLE_WAIT_MS` | `15000` | How long to wait for that pause before giving up with `userActive: true`. |
 | `ARC_MCP_STATE_DIR` | `~/Library/Application Support/arc-control-mcp` | Where tab ownership is recorded, so a restarted agent can clean up the tabs its previous run left behind. |
+| `ARC_MCP_ARC_DATA_DIR` | `~/Library/Application Support/Arc` | Where the local data tools read Arc's files from. |
+| `ARC_MCP_ALLOW_HISTORY` | unset | Set to `1` to let `search_history` run. Any other value leaves it off. |
+| `ARC_MCP_CDP` | on | Set to `0` to disable the [CDP engine](#cdp-engine) entirely: its tools then say so and nothing is probed. |
+| `ARC_MCP_CDP_PORT` | `9222` | The DevTools port to probe on `127.0.0.1`. The host is fixed. A value that is not a port number disables the engine and says why. |
+| `ARC_MCP_ALLOWED_ORIGINS` | unset | Comma list of origins the agent may touch. See [Guardrails](#guardrails). |
+| `ARC_MCP_BLOCKED_ORIGINS` | unset | Comma list of origins the agent may not touch. Wins over the allow list. |
+| `ARC_MCP_BLOCK_READS` | off | `1` applies both lists to read tools as well. |
+| `ARC_MCP_READ_ONLY` | off | `1` exposes only the read tools. |
+| `ARC_MCP_AUDIT_LOG` | unset | Path of a file that gets one JSON line per changing call. |
 
-## Isolation, and why not a separate window
+## Guardrails
 
-An Arc window is not an isolation boundary. Every window showing a space shares
-that space's whole tab list, so a second window displays the same tabs.
-Verified: a scripted new window listed the same 27 tabs as the original.
+Optional limits for an agent you do not fully trust with a browser. All are
+environment variables, read once at startup, so the agent cannot loosen them
+mid-session; set them in the MCP client's server config. A typo in a rule, or
+an audit file that cannot be written, stops the server at startup with the
+variable named, rather than leaving a guardrail silently off. `arc_status`
+reports what is active, so the model knows its limits before it hits one.
 
-The only real boundary is a **space**. Create one named `Agent` (or set
-`ARC_MCP_SPACE`) and every tab this server opens goes there, out of the sidebar
-you are working in. Without it, tabs open in the main window alongside yours;
-everything still works, they are just visible. `arc_status` reports which mode
-is active.
+```bash
+claude mcp add arc --scope user \
+  --env ARC_MCP_ALLOWED_ORIGINS='example.com,*.example.com,localhost:3000' \
+  --env ARC_MCP_BLOCKED_ORIGINS='admin.example.com' \
+  --env ARC_MCP_AUDIT_LOG="$HOME/arc-audit.jsonl" \
+  -- npx -y arc-control-mcp@latest
+```
 
-Agents are separated from each other as well: each runs its own copy of the
+**Origin rules.** An entry is `host`, `*.host`, `scheme://host[:port]`,
+`file://` (any file URL) or `about:` (any URL of that scheme). A bare host
+matches that exact host on any scheme and port. `*.example.com` matches
+subdomains only, so list `example.com` too. Matching is on the parsed hostname,
+never a substring, so `example.com.evil.test` does not match `example.com`.
+With an allow list, anything not on it is refused, including a blank tab; a
+block rule always wins.
+
+- `open_url` is checked against its target URL before anything opens.
+- Every other tool that changes a page (`click`, `fill`, `fill_form`, `type`,
+  `hover`, `select_option`, `press_key`, `scroll`, `execute_javascript`,
+  `go_back`, `go_forward`, `reload_tab`, `stop_loading`, `capture_start`, and the
+  [CDP engine](#cdp-engine)'s page-changing tools `trusted_click`, `trusted_type`,
+  `trusted_press_key`, `trusted_hover`, `drag`, `upload_file` and `handle_dialog`)
+  first reads the target tab's current URL and refuses when it is outside the rules.
+  The tab it vetted is the tab it acts on, even when no `tab_id` was passed.
+  This costs one extra `osascript` call per changing call. `batch` checks each
+  step as it runs.
+- Read tools are allowed unless `ARC_MCP_BLOCK_READS=1`. That covers the CDP
+  reads (`screenshot`, `console_messages`, `network_requests`) too, and with
+  `activate: true` a screenshot is held back by the activity gate like any other
+  visible operation.
+- The CDP engine never probes (attaches to and runs a script in) a page on an
+  origin the rules forbid, even to work out which target a tab is.
+- Tools that only manage Arc's own tabs (`close_tab`, `switch_to_tab`,
+  `close_own_tabs`, `focus_space`) are not origin-gated.
+- A refused call returns `ok: false`, `blocked: true`, `rule`, and an error that
+  names the rule and the origin. After a navigating tool (`open_url`, back,
+  forward, reload), the tab's final URL is checked again: a redirect that lands
+  on a blocked origin is reported as a failure, because the navigation happened.
+
+Limits worth knowing: the check is made before the call, so a page that
+navigates itself in between is not caught until the next call. A page the agent
+can already script can still send requests anywhere it likes, since the rules
+cover which pages the agent drives, not what those pages' own code fetches.
+
+**Read-only mode.** `ARC_MCP_READ_ONLY=1` advertises only the tools annotated
+read-only, and answers a call to any other tool by name with a refusal.
+
+**Audit log.** `ARC_MCP_AUDIT_LOG=<path>` appends one JSON line per changing
+call: `time`, `tool`, `tab` id, `origin` (scheme and host only, never a path or
+query), `ok`, and `error`. Fill values, typed text and script code are never
+logged. A page's own error message can quote them, so for `fill`, `fill_form`,
+`type`, `select_option`, `press_key`, `execute_javascript`, `trusted_type`,
+`trusted_press_key`, `upload_file` and `handle_dialog` a failure logs that it
+failed without the reason. Each `batch` step is logged as its own call. Refused calls
+are logged too. The file is created owner-only.
+
+## The agent window, and the activity gate
+
+The aim is that you can keep working in your own Arc window while an agent
+browses, and that the agent never takes the keyboard from you.
+
+### One agent window
+
+Agent tabs live in a single dedicated Arc window, not in yours
+(`ARC_MCP_WINDOW=dedicated`, the default). Its id is stored in the state
+directory, shared by every label and session, and finding or creating it runs
+under a cross-process lock. There is **at most one, ever**, and a new one is made
+only when the stored window is truly gone. A minimized window, or one Arc merely
+reports as `visible: false`, is not gone: Accessibility tells a minimized window
+from a closed one, and without Accessibility the server assumes the window is
+still there rather than risk a second one. The reason for the care: Arc honours
+Close Window only when Arc is frontmost and the window focused, and its windows
+have no Accessibility close button, so a stray window cannot be cleaned up from
+here. If you do close the agent window, the next `open_url` makes a new one.
+
+Placement (`ARC_MCP_WINDOW_PLACEMENT`, needs Accessibility, applied once at
+creation so a window you move yourself stays put):
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | The largest display that is not the main one. With a single display the window is left where Arc puts it, which is visible. |
+| `second-display` | Same, and says so in `agentWindow.note` when there is only one display. |
+| `minimized` | **Experimental.** Minimizes the window, and minimizes it again if making a tab brought it back. Not the default because whether minimized tabs keep loading, and whether Arc un-minimizes a window for a new tab, has not been verified. |
+| `none` | Never move it. |
+
+`ARC_MCP_WINDOW=space` restores the old design: tabs go into the `Agent` space
+of your window (an Arc window is not an isolation boundary, since every window
+showing a space lists the same tabs, so a space is the only separation there).
+
+Creating a window or tab raises it, and with Arc frontmost that takes keyboard
+focus from the window you are typing in. `open_url` therefore records which
+window had focus first and puts it back afterwards (`focusRestored: true` in the
+result). Arc's own scripting cannot do that, so it goes through Accessibility.
+It also records which application was in front, and when Arc took the front
+(creating a window, launching Arc from cold, `screenshot` with `activate`) it
+reactivates that application and checks that it worked: `focusRestored` is true
+only when everything displaced is back, and `focusRestoreError` says what was not.
+Without Accessibility there is no placement and no window restore (the
+application restore still runs), and `open_url` returns an `accessibilityNote`
+once saying how to grant it. While Arc is not running there is nothing to ask
+Accessibility about, which is not a missing grant: Arc is launched and the window
+made as normal.
+
+### The activity gate
+
+Before anything that can change what is on screen or which window has focus, the
+server waits until you have been idle for `ARC_MCP_IDLE_MS` (1500 ms), polling
+every 250 ms for up to `ARC_MCP_IDLE_WAIT_MS` (15 s). Idle time is the HID
+counter from `ioreg -c IOHIDSystem`, which needs no permission. If you never
+pause, the tool returns `ok: false, userActive: true` and an error saying you are
+using the Mac, so the agent should retry later; nothing was opened or moved. If
+you started typing only after this call had already created the agent window, the
+result says so (`agentWindow: { created: true, id }`): the empty window is kept
+and reused by the next call, never duplicated. On success the result carries
+`waitedForUserMs`. The wait happens before the cross-process lock is taken, never
+while holding it, so another session is not stuck behind your typing. `ARC_MCP_IDLE_MS=0` turns it off.
+
+| Gated (waits for you) | Never gated (background work) |
+|---|---|
+| `open_url` with a new tab, `little_arc` or `activate`; `screenshot` with `activate: true` | Page scripting and reads on open tabs: `execute_javascript`, `click`, `fill`, `select_option`, `press_key`, `scroll`, `wait_for_*`, `get_*`, `query_elements` |
+| `switch_to_tab`, `focus_space` | `list_tabs`, `list_spaces`, `get_current_tab`, `arc_status` |
+| Creating the agent window, moving it, and the focus restore itself | `go_back`, `go_forward`, `reload_tab`, `open_url` with `new_tab: false`, `close_tab`, `close_own_tabs` |
+
+`batch` is not gated as a whole, but each step goes through the same check, so a
+`switch_to_tab` step waits and a `fill` step does not. If the idle time cannot be
+read, the gate lets the call through and says so in `userIdleCheck`.
+
+### What stays visible
+
+- The agent window itself exists on screen. On a second display it is out of the
+  way; on a single display with `auto` it is a window you can see.
+- `open_url` raises the agent window for a moment. With Accessibility your window
+  is put back in front; without it, Arc may keep the agent window focused.
+- `activate: true`, `switch_to_tab` and `focus_space` are visible on purpose.
+- `little_arc` opens a Little Arc window that Arc does not expose afterwards.
+- Launching Arc, when it is not running, brings it up. `arc_status` and the other
+  reads never launch it.
+- Closing a tab you named by `tab_id` can change what its window shows, and
+  closing the last tab of the agent window may close that window.
+- A page can still make noise by itself (audio, a `window.open`, a dialog),
+  which no tool here controls. Page scripts only move DOM focus inside the tab.
+
+Agents are also separated from each other: each runs its own copy of the
 server, ownership is tracked per session, and `ARC_MCP_LABEL` names it. One
 agent's `list_tabs scope=own` and `close_own_tabs` never see another's tabs,
 even when both use the same label. Tabs left behind by a dead earlier run are
 reported by `arc_status` as stale and only closed if you ask, with
 `close_own_tabs include_stale=true`, so a restart can never sweep away a live
-sibling's tabs. Agents do still share the one `Agent` space in the sidebar,
-since Arc will not let a script create a space.
+sibling's tabs. All agents share the one agent window.
 
 ## Known Arc limitations
 
@@ -422,15 +805,18 @@ retry.
 
 ### Limitations of synthetic events
 
-Everything this server does in a page is a synthetic event, dispatched from
-injected JavaScript. Widgets gated on trusted events (`event.isTrusted`) cannot
-be driven that way, and there is no workaround inside this design: Arc's
-`execute javascript` gives no CDP access, so there is no way to inject a real
-input event.
+`click`, `fill` and `press_key` dispatch synthetic events from injected
+JavaScript. Widgets gated on trusted events (`event.isTrusted`) cannot be driven
+that way: Arc's `execute javascript` gives no way to inject a real input event.
+The [CDP engine](#cdp-engine) is the way out (`trusted_click`, `trusted_type`,
+`trusted_press_key`, `drag`), but only when you have launched Arc with the
+DevTools flag. Without it, use the workarounds below.
 
 Verified against Wikipedia's search box. `fill` sets the value correctly, but
-the suggestion dropdown never opens. Hand-dispatching per-character
-`keydown`/`input`/`keyup` does not help either.
+the suggestion dropdown never opens. Per-character events do not help there
+either, which is why `type` exists for the widgets that do listen to them (a
+handler on `input` or `keydown` that does not check `isTrusted`), not as a way
+past ones that do.
 
 The workaround does work, and is usually what you wanted anyway:
 
@@ -438,7 +824,64 @@ The workaround does work, and is usually what you wanted anyway:
 - navigate straight to the search URL with `open_url`.
 
 If a widget only reacts to a suggestion list, a hover preview, or a drag, expect
-it not to react here.
+it not to react to the synthetic tools; use the trusted ones.
+
+### Loading tabs and `stop_loading`
+
+While a tab is still loading, Arc does not answer `execute javascript`: the call
+hangs until the 30 second osascript timeout, and one made during a load may
+never return even after the load finishes. A hung request, or an `<iframe>`
+whose server never answers, keeps a tab in that state indefinitely (measured
+against Arc 1.165, with a localhost server that held a response open).
+`stop_loading` presses the stop button through Arc's AppleScript `stop` command,
+after which scripts work again and the page keeps what had rendered.
+
+Arc exposes a `loading` property on every tab that answers immediately, and
+`wait_for_load` reads it before asking the page anything. A tab that is loading
+reports `ready: "loading"`, and a timeout says so and points at `stop_loading`,
+instead of stalling for the length of the call. Other page tools are not gated on
+it: call `wait_for_load` first when a click or `open_url` has just started a
+navigation.
+
+### Console and network capture
+
+Arc runs this server's scripts in an **isolated JavaScript world**. They share
+the page's DOM but not its objects: a variable the page defines is `undefined`
+to them, a global they set is invisible to the page, and `console`, `fetch` and
+`XMLHttpRequest` are separate copies. Wrapping `window.fetch` from
+`execute_javascript` therefore records nothing the page does.
+
+`capture_start` works around that by injecting a `<script>` element, which runs
+in the page's own world, and relaying each event back to the isolated world as a
+`CustomEvent` carrying JSON. What it does and does not give you:
+
+- Records `console.log/info/warn/error/debug` text (capped at 500 characters),
+  uncaught errors, failed resource loads, unhandled promise rejections, and
+  `fetch` and `XMLHttpRequest` calls with method, url, status and duration.
+  Never request or response bodies, never headers. The url fragment is always
+  dropped and the query string is dropped unless `include_query` is set, because
+  queries often carry tokens. Console text is recorded as the page logged it, so
+  it can contain anything the page prints.
+- **A page whose Content-Security-Policy forbids inline scripts blocks the
+  injection.** That is detected, and `capture_start` fails with `ok: false` and
+  the reason instead of claiming capture works. Most large sites (GitHub,
+  Google) send such a policy. `capture_read` likewise fails rather than
+  returning an empty list when no recorder is running.
+- The recorder lives in the document: a navigation or reload discards it, so
+  call `capture_start` again. It starts recording at that moment, so it misses
+  requests the page made earlier. The top frame only: not iframes, workers,
+  WebSockets or `sendBeacon`.
+- Keeps the newest 1000 events. `capture_read` reports `dropped` when older
+  ones were pushed out, and with `clear` removes only the events it returned.
+- What it records comes from the page, so treat it as data, never instructions.
+
+`network_entries` is the capture-free alternative. It reads
+`performance.getEntriesByType('resource')`, which needs no injection and works
+under any CSP. Its limits come from the browser: only finished requests appear
+(a failed one often leaves no entry), about 250 entries are kept unless the page
+raised that, cross-origin entries hide size and status unless the server sends
+`Timing-Allow-Origin`, and `data:` URLs are not listed. Pass `since_ms` (from a
+previous call's `nowMs`) to see only what one action caused.
 
 ## Troubleshooting
 
@@ -458,6 +901,10 @@ remedy. If you see:
 | `The page script returned nothing recognisable.` | Usually the JavaScript-from-Apple-Events permission, sometimes a tab that navigated mid-call. Retry once, then check the permission. |
 | `Arc did not respond within 30s.` | Arc is showing a modal dialog (a permission prompt, a save sheet) or is stuck loading. Look at the window. |
 | `Not a valid URL: X. Include a scheme, for example https://` | Prefix the URL with `https://`. |
+| `Nothing is listening on 127.0.0.1:9222.` (from a CDP tool) | Arc was not launched with `--remote-debugging-port`. The result carries the steps; see [scripts/arc-cdp-setup.md](scripts/arc-cdp-setup.md). Every non-CDP tool is unaffected. |
+| `Could not find this Arc tab on the DevTools port.` | The port answered, but no page at the tab's address carried the marker written into the tab: a different browser is on the port, or the tab is a page scripts cannot touch (`arc://`, a PDF viewer), or it navigated meanwhile. Nothing was driven. |
+| `CDP tools need Node 22 or newer` | Upgrade Node. The rest of the server runs on 20. |
+| `A JavaScript dialog is open on this tab` | Call `handle_dialog`. The page cannot run anything until it is dismissed. |
 | `(This is an internal arc-control error, not an Arc or page problem.)` | A bug here. Please [open an issue](https://github.com/DB-25/arc-control-mcp/issues) with the tool, arguments and full error. |
 
 If a tool reports `ok: false` with `timedOut`, that is not an error: it is
@@ -471,16 +918,37 @@ src/
   index.js       MCP wiring, --version and --help
   registry.js    composes tool modules, validates tool/handler parity at load
   jxa.js         osascript runner, Arc preamble, error mapping
-  state.js       per-session tab ownership
+  state.js       per-session tab ownership, cross-process lock
+  agent-window.js  find-or-create the one agent window
+  focus-guard.js  remembers the user's window and application, puts them back
+  placement.js   where the agent window goes (pure geometry)
+  ax.js          Accessibility: window placement and focus
+  window-config.js  ARC_MCP_WINDOW and ARC_MCP_WINDOW_PLACEMENT
+  user-activity.js  the idle gate (HID idle time)
+  arc-data.js    reads Arc's sidebar and archive files
+  arc-history.js reads Arc's history database from a temporary copy
+  policy.js      guardrails: origin rules, read-only mode, audit log
   page-lib.js    helper library injected into the page as `A`
+  result.js      turns a handler result into MCP content (JSON text, or an image)
+  cdp/           the DevTools engine: client, engine, tab mapping, capture, input
   tools/
     shared.js      common schemas and run helpers
     tabs.js        list, switch, close, status
-    navigation.js  open, back, forward, reload, wait for load
+    navigation.js  open, back, forward, reload, wait for load, stop loading
+    open-dedicated.js  open_url into the agent window
     content.js     text, html, structured queries, links, page info
     interact.js    click, fill, select, keys, scroll, wait for selector
+    input.js       fill_form, hover, type
+    wait.js        wait for text
+    capture.js     console and network capture, resource timing
     spaces.js      Arc spaces
     scripting.js   raw JavaScript and batch
+    local.js       sidebar, stale tabs, archive and history from Arc's own files
+
+    cdp.js         screenshots, trusted input, console and network capture
+scripts/
+  arc-cdp-setup.md   how to opt in, and what it costs in security
+  arc-cdp-healer.sh  optional launchd helper that re-applies the flag after an update
 ```
 
 Adding a module means creating `tools/<name>.js` exporting `tools` and

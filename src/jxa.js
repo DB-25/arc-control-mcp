@@ -16,15 +16,42 @@ const Arc = Application("Arc");
 
 // Arc keeps closed windows in its scripting collection as invisible phantoms
 // whose activeTab is unreachable, so every lookup must filter on visible().
+// A minimized window is invisible too, which is why the agent window, which may
+// be minimized on purpose, is handled apart from the user's windows.
+function idOf(w) {
+  try { return w.id(); } catch (e) { return null; }
+}
+
+// The user's windows. The agent window is excluded so that "the front window"
+// and "the user's active tab" can never resolve to it.
 function liveWindows() {
   const live = [];
   for (let i = 0; i < Arc.windows.length; i++) {
     const w = Arc.windows[i];
     try {
-      if (w.visible()) live.push(w);
+      if (w.visible() && idOf(w) !== P.agent_window_id) live.push(w);
     } catch (e) { /* phantom */ }
   }
   return live;
+}
+
+// The dedicated agent window, whether or not it is currently visible.
+function agentWindow() {
+  if (!P.agent_window_id) return null;
+  for (let i = 0; i < Arc.windows.length; i++) {
+    const w = Arc.windows[i];
+    if (idOf(w) === P.agent_window_id) return w;
+  }
+  return null;
+}
+
+// Every window that can hold a tab this agent cares about: the user's first, so
+// a tab keeps reporting the window it was found in, then the agent window.
+function tabWindows() {
+  const all = liveWindows();
+  const agent = agentWindow();
+  if (agent) all.push(agent);
+  return all;
 }
 
 function mainWindow() {
@@ -35,20 +62,28 @@ function mainWindow() {
 
 function requireArc() {
   if (!Arc.running()) throw new Error("ARC_NOT_RUNNING");
-  if (liveWindows().length === 0) throw new Error("ARC_NO_WINDOW");
+  if (tabWindows().length === 0) throw new Error("ARC_NO_WINDOW");
 }
 
 function snapshot() {
   const rows = [];
-  const live = liveWindows();
+  // Spaces, and so tabs, are shared by every window: each window's collection
+  // lists all of them. Report each tab once, under the first window that has it.
+  const seen = {};
+  const live = tabWindows();
+  const owned = P.owned_ids || [];
   for (let wi = 0; wi < live.length; wi++) {
     const w = live[wi];
-    const ids = w.tabs.id();
+    const isAgentWindow = !!P.agent_window_id && idOf(w) === P.agent_window_id;
+    let ids;
+    try { ids = w.tabs.id(); } catch (e) { continue; /* a closed agent window left behind */ }
     const titles = w.tabs.title();
     const urls = w.tabs.url();
     const locations = w.tabs.location();
     const windowId = w.id();
-    const activeId = w.activeTab.id();
+    // A freshly created window has no active tab at all.
+    let activeId = null;
+    try { activeId = w.activeTab.id(); } catch (e) { /* none */ }
 
     // Which space each tab belongs to, so callers can tell agent tabs from the
     // user's without opening anything.
@@ -63,6 +98,11 @@ function snapshot() {
     } catch (e) { /* spaces unavailable */ }
 
     for (let ti = 0; ti < ids.length; ti++) {
+      if (seen[ids[ti]]) continue;
+      // A tab this agent opened belongs to the agent window, even though the
+      // user's windows list it too.
+      if (!isAgentWindow && P.agent_window_id && owned.indexOf(ids[ti]) >= 0) continue;
+      seen[ids[ti]] = true;
       rows.push({
         id: ids[ti],
         title: titles[ti],
@@ -72,21 +112,32 @@ function snapshot() {
         windowId: windowId,
         windowIndex: wi + 1,
         tabIndex: ti + 1,
-        isActive: ids[ti] === activeId
+        // The agent window's selection is not what the user is looking at.
+        isActive: !isAgentWindow && ids[ti] === activeId,
+        inAgentWindow: isAgentWindow
       });
     }
   }
   return rows;
 }
 
+// Returns a specifier by id, never by position. A positional specifier
+// (w.tabs[i]) is re-resolved on every Apple Event that uses it, so another
+// process opening or closing a tab between two events shifts it onto a
+// different tab: a describe() or a close() then lands on a tab nobody chose
+// (seen as a stop_loading result describing another agent's tab). An id
+// specifier follows the tab, and fails with "Can't get object" if it is gone.
 function locate(tabId) {
-  const live = liveWindows();
+  // Tabs are listed by every window, and selecting one through the wrong window
+  // would change that window's tab. A tab this agent opened is therefore looked
+  // up through the agent window first, never through the user's.
+  const agent = agentWindow();
+  const live = agent && (P.owned_ids || []).indexOf(tabId) >= 0 ? [agent].concat(liveWindows()) : tabWindows();
   for (let wi = 0; wi < live.length; wi++) {
     const w = live[wi];
-    const ids = w.tabs.id();
-    for (let ti = 0; ti < ids.length; ti++) {
-      if (ids[ti] === tabId) return w.tabs[ti];
-    }
+    let ids;
+    try { ids = w.tabs.id(); } catch (e) { continue; /* a closed agent window left behind */ }
+    if (ids.indexOf(tabId) >= 0) return w.tabs.byId(tabId);
   }
   return null;
 }
@@ -115,6 +166,17 @@ function agentSpace() {
   return P.agent_space ? findSpace(P.agent_space) : null;
 }
 
+// A space as one particular window lists it, which is what a tab pushed into it
+// is created through.
+function spaceIn(w, needle) {
+  const count = w.spaces.length;
+  for (let i = 0; i < count; i++) {
+    const space = w.spaces[i];
+    if (space.id() === needle || space.title() === needle) return space;
+  }
+  return null;
+}
+
 // Arc returns the JSON encoding of whatever the page expression evaluated to,
 // so a string arrives wrapped in quotes and an object as JSON text.
 function evalJs(tab, code) {
@@ -141,13 +203,7 @@ function describe(tab) {
 }
 
 function findSpace(needle) {
-  const w = mainWindow();
-  const count = w.spaces.length;
-  for (let i = 0; i < count; i++) {
-    const space = w.spaces[i];
-    if (space.id() === needle || space.title() === needle) return space;
-  }
-  return null;
+  return spaceIn(mainWindow(), needle);
 }
 `;
 
@@ -161,6 +217,13 @@ export function jsLiteral(value) {
 }
 
 export class ArcError extends Error {}
+
+// Set by agent-window.js when the dedicated window mode is on. A hook rather
+// than an import, because that module itself runs scripts through this one.
+let agentWindowId = () => null;
+export function bindAgentWindowId(fn) {
+  agentWindowId = fn;
+}
 
 // osascript appends its own " (-2700)" style code to the thrown message
 function sentinel(message, name) {
@@ -188,6 +251,9 @@ export function friendly(message) {
       'it will not act on whatever tab the user happens to be looking at.',
       'Pass an explicit tab_id from list_tabs, or call open_url first to get your own tab.'
     ].join('\n');
+  }
+  if (message.includes('AGENT_WINDOW_MISSING')) {
+    return 'The agent window disappeared before a tab could be opened in it. Try again, and a new one is made if it is really gone.';
   }
   if (message.includes('ARC_NOT_RUNNING')) {
     return 'Arc is not running. Launch Arc, or use open_url, which starts it.';
@@ -217,7 +283,11 @@ export function friendly(message) {
  * The body's final expression must be a JSON string.
  */
 export async function runJxa(body, params = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const script = `const P = ${jsLiteral(params)};\n${PREAMBLE}\n${body}`;
+  // Every script, not only the ones built by scoped(), must know which window
+  // is the agent's: locate() reads it, and close_own_tabs would otherwise skip
+  // a tab that lives there.
+  const withWindow = 'agent_window_id' in params ? params : { ...params, agent_window_id: agentWindowId() };
+  const script = `const P = ${jsLiteral(withWindow)};\n${PREAMBLE}\n${body}`;
   let stdout;
   try {
     ({ stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], {

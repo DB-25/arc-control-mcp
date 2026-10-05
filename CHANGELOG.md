@@ -5,6 +5,258 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-05
+
+This release makes the server a better guest and a more capable driver. Agent
+tabs now live in one dedicated window and anything visible waits for you to stop
+typing, so you can keep working while an agent browses. Pages can be read as a
+tree with stable refs instead of guessed selectors, an optional DevTools engine
+adds real input, screenshots and console and network capture, four tools read
+Arc's own data files, and the operator can fence the agent in with guardrails.
+The 0.3.0 rule still holds throughout: a call that did not do the thing says so.
+
+### Added
+
+#### Agent window and activity gate
+
+- Window guard: before anything that creates or places a window, the server
+  records the frame of every one of the user's Arc windows, and afterwards
+  moves any that shifted back and reports `userWindowsMovedBack`. In the first
+  live run the user's own window jumped onto the agent window's display while
+  the agent window was being created.
+- A dedicated agent window. `open_url` opens new tabs in one separate Arc window
+  instead of the user's own. `ARC_MCP_WINDOW=dedicated` is the default; `space`
+  keeps the old behaviour.
+- At most one agent window, ever. Its id is stored in the shared state directory
+  and found or created under a cross-process lock, and a new one is made only
+  when the stored window is truly gone: a minimized window, or one Arc reports as
+  `visible: false`, counts as present. A lock is broken only when its file is
+  older than a stale threshold, never because a waiter ran out of patience, and
+  the wait for the user to go idle happens before the lock is taken. Tested with
+  concurrent callers against a fake Arc.
+- `ARC_MCP_WINDOW_PLACEMENT` (`auto`, `second-display`, `minimized`, `none`).
+  `auto` uses the largest non-main display and otherwise leaves the window where
+  Arc puts it. `minimized` is experimental and not a default.
+- Focus protection. With Accessibility, the server records which Arc window had
+  focus and which application was in front before a window or tab is created, and
+  puts both back, reporting `focusRestored`. That is true only when everything
+  that was displaced is back and the front application was read again to confirm
+  it; `focusRestoreError` says what was not. This also covers a cold start: with
+  Arc not running there is no `Arc` process for Accessibility to ask about, which
+  counts as unavailable for now (not a refusal, and not cached), so Arc is
+  launched, the window made, and the front application put back. Without Accessibility there is no placement and
+  no window restore, and a one-time `accessibilityNote` says how to grant it
+  (errors -1719 and -25211 are mapped to it).
+- The user-activity gate. Before anything that can change what is on screen or
+  which window has focus (`open_url` with a new tab, `little_arc` or `activate`,
+  `switch_to_tab`, `focus_space`, `screenshot` with `activate`, creating or moving
+  the agent window, and the focus restore), the server waits until the user has
+  been idle for `ARC_MCP_IDLE_MS` (1500 ms), polling for up to
+  `ARC_MCP_IDLE_WAIT_MS` (15 s). If the user never pauses the tool fails with
+  `ok: false, userActive: true`; otherwise it reports `waitedForUserMs`. Reads,
+  page scripting and history are never gated. `ARC_MCP_IDLE_MS=0` disables it.
+  Idle time comes from `ioreg -c IOHIDSystem` and needs no permission. If the
+  user became active after this call had already created the window, the result
+  carries `agentWindow: { created: true, id }` and says so instead of claiming
+  nothing was touched.
+- `arc_status` reports the agent window (id, placement, display, minimized),
+  whether Accessibility is available, and the current user idle time.
+  `list_tabs` rows carry `inAgentWindow`.
+
+#### Snapshot and refs
+
+- `snapshot`: the page as a compact indented tree of roles, accessible names and
+  refs (`- button "Save" [ref=e12] (disabled)`). Walks open shadow roots and
+  same-origin iframes, skips hidden subtrees, and takes `interactive_only`,
+  `scope`, `depth`, `max_chars` (truncation is always reported), `boxes` and
+  `diff`.
+- Refs are stable across snapshots, and every selector argument accepts
+  `ref=e12`, the DevTools tools included. A ref whose element was replaced by an
+  identical one is re-resolved by role, name and position and reported as
+  `reResolved: true`; one whose element is gone fails saying it is stale and to
+  snapshot again.
+- Selector forms `role=button[name="Save"]` (`name~=` for a substring),
+  `label=Email` and `placeholder=Search`, in every tool that takes a selector.
+
+#### CDP engine
+
+For the three things Apple Events cannot do: real (trusted) input, screenshots,
+and console and network visibility. It talks to Arc over the Chrome DevTools
+Protocol using Node's built-in `WebSocket` (Node 22 or newer for these tools
+only; `engines` is unchanged and everything else runs on 20). No new
+dependencies.
+
+- **It is on by default and inert until Arc exposes the port.** The first CDP
+  tool probes `127.0.0.1:9222` (`ARC_MCP_CDP_PORT` changes the port,
+  `ARC_MCP_CDP=0` disables the engine). A failed probe is cached for 10 seconds,
+  so ordinary calls never pay for it. With nothing listening, every CDP tool
+  returns `ok: false` plus the setup steps, and every other tool behaves as
+  before. **Arc serves the port only when launched with
+  `--remote-debugging-port`, and that port is unauthenticated: any local process
+  can drive Arc through it.** Read `scripts/arc-cdp-setup.md` first.
+- A tab is mapped to its CDP target by a one-time random marker that the Apple
+  Event side writes into the page's DOM, never by URL or title. A target is used
+  only after the marker is found in it, so another Chromium on the same port is
+  never driven by mistake. Only targets at the tab's own address are probed, with
+  one retry after a short wait, and a target on an origin the guardrails forbid is
+  never probed. The mapping is cached and revalidated on every use. CDP never
+  creates targets (`Target.createTarget` crashes Arc).
+- New tools: `cdp_status`, `screenshot` (viewport, `full_page`, or an element;
+  PNG or JPEG; returns MCP image content; works on a background tab),
+  `trusted_click` (`button`, `click_count`), `trusted_type` (`per_key`, `clear`),
+  `trusted_press_key` (modifiers such as `Meta+A`), `trusted_hover`, `drag`
+  (including native HTML5 drag and drop), `upload_file`, `handle_dialog`,
+  `console_messages` and `network_requests`.
+- `trusted_type` fails with `ok: false` and types nothing when the field it was
+  asked to fill never took focus, rather than typing into whatever had it.
+- `ref=`, `role=`, `label=` and `placeholder=` selectors work in `trusted_*`,
+  `drag`, `upload_file` and `screenshot`. The ref table lives in Arc's isolated
+  world, which CDP cannot see, so the selector is resolved on the Apple Event side
+  and the element is stamped with a one-time `data-arc-mcp-target` attribute that
+  the DevTools call selects and then removes. Stale-ref failures and
+  `reResolved` behave as in `click`.
+- A JavaScript dialog opened by an action is reported in that tool's result
+  instead of hanging it, and other CDP tools say a dialog is open and point at
+  `handle_dialog`.
+- `console_messages` and `network_requests` record from the first time a CDP tool
+  touches a tab (CDP has no history). Bodies are never stored. `network_requests`
+  shows urls without their query string and fragment unless `include_query` is
+  set, and headers are opt-in.
+- `arc-control-mcp --check-cdp` probes the port and prints the browser and page
+  count (`npm run check-cdp` does the same). It changes nothing and exits 1 when
+  nothing answers.
+- `scripts/arc-cdp-setup.md`, `scripts/arc-cdp-healer.sh` and a LaunchAgent
+  template. The healer re-applies the flag after a Sparkle update: every 30
+  seconds, and only when Arc is running, the port is closed, Arc started less than
+  180 seconds ago and the user has been idle for 5 seconds does it quit Arc
+  gracefully and reopen it with the flag. It
+  waits 10 minutes between attempts, never force-kills, and is not installed by
+  anything in this package.
+- A tool result can now carry an image. `batch` drops it and says so.
+
+#### Local data
+
+- Four read-only tools that read Arc's own data files instead of driving Arc,
+  for state Apple Events cannot report and in milliseconds:
+  - `sidebar_tree`: spaces with pinned items (folders nested), unpinned tabs and
+    top apps, each tab with title, url, last-active time and its `tab_id`.
+    `match_live` marks which tabs are open.
+  - `find_stale_tabs`: tabs idle for N days, oldest first, with space and
+    pinned / unpinned / top app, plus exact duplicate URLs.
+  - `search_archive`: search archived and closed tabs by text, newest first.
+  - `search_history`: search browsing history by text and time window. Opt-in:
+    it returns `ok: false` unless `ARC_MCP_ALLOW_HISTORY=1` is set.
+- `ARC_MCP_ARC_DATA_DIR` relocates the directory these tools read.
+- Every local data result reports `asOf` (the file's modification time) and a
+  note that Arc writes these files periodically. A missing file, invalid JSON, an
+  unknown format version or an unexpected history schema fails with `ok: false`.
+  History is read from a temporary copy that is deleted afterwards, through the
+  macOS `sqlite3`, with no new dependency. Nothing is ever written to Arc's files.
+
+#### Guardrails
+
+Read once from the environment at startup, so an agent cannot loosen them.
+
+- `ARC_MCP_ALLOWED_ORIGINS` and `ARC_MCP_BLOCKED_ORIGINS` (comma lists,
+  `*.example.com` wildcards) limit which origins the agent may touch: `open_url`
+  is checked against its target, every other changing tool against the target
+  tab's current URL. That includes the CDP page-changing tools (`trusted_click`,
+  `trusted_type`, `trusted_press_key`, `trusted_hover`, `drag`, `upload_file`,
+  `handle_dialog`). A refused call returns `ok: false`, `blocked: true` and the
+  rule that did it. A navigation that a redirect lands on a blocked origin is
+  reported as a failure.
+- `ARC_MCP_BLOCK_READS=1` applies the rules to read tools too, the CDP reads
+  included. `ARC_MCP_READ_ONLY=1` advertises and runs only the read tools.
+- `ARC_MCP_AUDIT_LOG=<path>` appends one JSON line per changing call (time, tool,
+  tab, origin, ok, error) and never logs typed values, fill values or script
+  code. `arc_status` reports the guardrails in force.
+
+#### Interaction and capture tools
+
+- `click`, `fill`, `select_option` and `press_key` wait for the DOM to go quiet
+  and report `settledMs`, `settled` and `mutations`. `settle_ms` sets the quiet
+  window (default 300, `0` skips, capped at 1500).
+- `wait_for_text`: poll until any of several strings, or a regex, appears in or
+  disappears from the page's text or a scope selector.
+- `fill_form`: fill up to 50 fields in one page call, each through the same
+  checks as `fill`, with a result per field and `ok: false` naming any that failed.
+- `hover`: pointerover, pointerenter, mouseover, mouseenter, pointermove and
+  mousemove at the element's center, with `coveredBy` like `click`.
+- `type`: character-by-character typing (keydown, keypress, beforeinput,
+  native-setter append, input, keyup) for widgets that ignore `fill`, with an
+  optional `delay_ms`. It verifies the final value and fails when characters
+  did not go in.
+- `stop_loading`: Arc's AppleScript `stop` on a tab.
+- `capture_start`, `capture_read`: record console output, errors, unhandled
+  rejections and fetch and XMLHttpRequest calls (never bodies or headers).
+  Arc runs scripts in an isolated world that cannot see the page's `fetch` or
+  `console`, so the recorder is injected as a `<script>` element and relays
+  events through the DOM. A page whose CSP blocks that gets `ok: false` and the
+  reason, never a capture that silently records nothing.
+- `network_entries`: the page's requests from resource timing, with no recorder.
+
+### Changed
+
+- `screenshot`, `console_messages` and `network_requests` resolve a call with no
+  `tab_id` like a changing tool: a tab this agent opened, or a refusal, never the
+  tab the user is looking at. They attach a debugger, so reading is not as
+  harmless as it is for the other read tools. `arc_status` lists them under
+  `resolvesTo.readsThatResolveAsMutating`.
+- `network_requests` urls no longer include the query string by default, as in
+  `capture_read`. Pass `include_query` to keep it. `url_contains` matches the url
+  as shown.
+- `wait_for_load` reads the tab's `loading` property before asking the page.
+  Arc does not answer `execute javascript` on a tab that is loading, so the old
+  probe could sit for its whole timeout; a loading tab now reports
+  `ready: "loading"` and the timeout note points at `stop_loading`.
+- `isActive` is never set on a tab of the agent window, so a read-only tool with
+  no `tab_id` cannot fall back to an agent tab as if it were the user's.
+- A tab this agent opened is looked up through the agent window first, so
+  selecting or closing it never goes through the user's window.
+- `arc_status` and every read tool never launch Arc.
+
+### Fixed
+
+- Tabs are addressed by id rather than by position. A positional specifier is
+  re-resolved on every Apple Event, so another process opening or closing a tab
+  between a lookup and the action that followed it could land the action on a
+  different tab (seen as `stop_loading` describing another agent's tab).
+
+### Security notes
+
+- The DevTools port is unauthenticated: any process running as you can drive Arc
+  through it once Arc is launched with `--remote-debugging-port`. The engine is
+  inert until then, `ARC_MCP_CDP=0` switches it off, and `cdp_status` repeats the
+  warning.
+- `upload_file` refuses relative paths, missing files, directories, and
+  credential, shell-history, mail and browser-profile files (`~/.ssh`, `~/.aws`,
+  `.env` and `.env.*`, `.zsh_history`, `.bash_history`, Arc and Chrome profiles,
+  `~/Library/Messages`, `Mail`, `Safari` and `Keychains`), including through a
+  symlink and whatever the letter case.
+- Header values are redacted as they arrive: `cookie`, `authorization`,
+  `set-cookie`, and any name starting `x-auth` or containing `token`, `secret`,
+  `key`, `session` or `signature`. Bodies are never stored.
+- The audit log withholds the reason for a failed `press_key`,
+  `trusted_press_key` or `handle_dialog`, and scrubs `key` and `prompt_text`
+  values, since a key sequence can be a typed password.
+- Mapping a tab to its DevTools target no longer attaches to every page on the
+  port and evaluates in it, which would have run a script in tabs unrelated to the
+  call, on origins the guardrails forbid.
+
+### Known limits
+
+- Without Accessibility a minimized agent window cannot be told from a closed
+  one, so a closed window is not recreated until Accessibility is granted or the
+  `agent-window.json` file in the state directory is deleted.
+- `ARC_MCP_WINDOW_PLACEMENT=minimized` has not been verified live.
+- The first input event sent to a background tab stalls for about five seconds
+  unless focus emulation is on. The trusted tools turn on
+  `Emulation.setFocusEmulationEnabled` once per attached tab, after which input
+  and screenshots on a background tab are immediate and do not bring it forward.
+- A synthetic or CDP `Meta+A` does not select all on macOS by itself, because the
+  menu bar handles it. `trusted_press_key` sends the matching editing command
+  with `Meta` shortcuts (`A`, `C`, `V`, `X`, `Z`).
+
 ## [0.3.1] - 2026-10-05
 
 The 0.3.0 theme continued: three more ways a call could report success for
@@ -306,6 +558,7 @@ Initial version.
 - Arc's raw AppleScript error codes mapped to messages that name the remedy,
   including both required macOS permissions.
 
+[0.4.0]: https://github.com/DB-25/arc-control-mcp/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/DB-25/arc-control-mcp/releases/tag/v0.3.1
 [0.3.0]: https://github.com/DB-25/arc-control-mcp/releases/tag/v0.3.0
 [0.1.0]: https://github.com/DB-25/arc-control-mcp/releases/tag/v0.1.0

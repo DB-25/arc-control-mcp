@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  TEMPLATE. Not installed by anything in this package. See scripts/arc-cdp-setup.md.
+  Replace __SCRIPT_PATH__ with the absolute path of a copy of arc-cdp-healer.sh and
+  __HOME__ with your home directory, save as
+  ~/Library/LaunchAgents/company.thebrowser.arc-cdp-healer.plist, then load it with
+  launchctl bootstrap gui/$UID ~/Library/LaunchAgents/company.thebrowser.arc-cdp-healer.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>company.thebrowser.arc-cdp-healer</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__SCRIPT_PATH__</string>
+  </array>
+
+  <!-- Run now, then every 30 seconds. The script exits at once unless Arc was just started without the flag. -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>30</integer>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <!-- Uncomment to use another port. It must match ARC_MCP_CDP_PORT in your MCP client config.
+    <key>ARC_MCP_CDP_PORT</key>
+    <string>9222</string>
+    -->
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/arc-cdp-healer.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/arc-cdp-healer.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>LowPriorityIO</key>
+  <true/>
+</dict>
+</plist>

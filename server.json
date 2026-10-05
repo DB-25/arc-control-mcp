@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.DB-25/arc-control-mcp",
   "title": "Arc Control (macOS)",
-  "description": "macOS-only MCP server for the Arc browser: tabs, navigation, page reading, DOM, scripting",
-  "version": "0.3.1",
+  "description": "Arc browser MCP for macOS: agent window, snapshots, DevTools input, guardrails",
+  "version": "0.4.0",
   "websiteUrl": "https://github.com/DB-25/arc-control-mcp",
   "repository": {
     "url": "https://github.com/DB-25/arc-control-mcp",
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "arc-control-mcp",
-      "version": "0.3.1",
+      "version": "0.4.0",
       "transport": {
         "type": "stdio"
       },
@@ -28,7 +28,7 @@
         },
         {
           "name": "ARC_MCP_SPACE",
-          "description": "The Arc space new tabs open into, when a space with that name exists. Arc will not let a script create a space, so make it by hand. Defaults to \"Agent\".",
+          "description": "With ARC_MCP_WINDOW=space, the Arc space new tabs open into, when a space with that name exists. Arc will not let a script create a space, so make it by hand. Defaults to \"Agent\".",
           "isRequired": false,
           "isSecret": false,
           "default": "Agent"
@@ -36,6 +36,91 @@
         {
           "name": "ARC_MCP_STATE_DIR",
           "description": "Directory where per-session tab ownership is recorded, so a restarted agent can clean up the tabs its previous run left behind. Defaults to ~/Library/Application Support/arc-control-mcp.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "filepath"
+        },
+        {
+          "name": "ARC_MCP_WINDOW",
+          "description": "\"dedicated\" keeps agent tabs in one separate agent window, never the user's own. \"space\" puts them in the Agent space of the user's window. Defaults to \"dedicated\".",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "dedicated"
+        },
+        {
+          "name": "ARC_MCP_WINDOW_PLACEMENT",
+          "description": "Where the agent window goes once, at creation: \"auto\" (largest non-main display, else where Arc puts it), \"second-display\", \"minimized\" (experimental) or \"none\". Needs Accessibility. Defaults to \"auto\".",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "auto"
+        },
+        {
+          "name": "ARC_MCP_IDLE_MS",
+          "description": "How many milliseconds the user must have been idle before the server does anything visible. 0 turns the activity gate off. Defaults to 1500.",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "1500"
+        },
+        {
+          "name": "ARC_MCP_IDLE_WAIT_MS",
+          "description": "How many milliseconds to wait for that pause before failing with userActive true. Defaults to 15000.",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "15000"
+        },
+        {
+          "name": "ARC_MCP_ARC_DATA_DIR",
+          "description": "Directory the local data tools (sidebar_tree, find_stale_tabs, search_archive, search_history) read Arc's files from. Defaults to ~/Library/Application Support/Arc.",
+          "isRequired": false,
+          "isSecret": false,
+          "format": "filepath"
+        },
+        {
+          "name": "ARC_MCP_ALLOW_HISTORY",
+          "description": "Set to 1 to let search_history run. Off by default, and any other value leaves it off.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "ARC_MCP_CDP",
+          "description": "Set to 0 to disable the DevTools engine (trusted input, screenshots, console and network capture). On by default, and inert until Arc is launched with --remote-debugging-port.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "ARC_MCP_CDP_PORT",
+          "description": "The DevTools port to probe on 127.0.0.1. The host is fixed. Defaults to 9222.",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "9222"
+        },
+        {
+          "name": "ARC_MCP_ALLOWED_ORIGINS",
+          "description": "Guardrail. Comma list of origins the agent may touch (host, *.host, scheme://host[:port], file://, about:). Anything not listed is refused. Unset means no allow list.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "ARC_MCP_BLOCKED_ORIGINS",
+          "description": "Guardrail. Comma list of origins the agent may not touch. Wins over the allow list. Unset means no block list.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "ARC_MCP_BLOCK_READS",
+          "description": "Set to 1 to apply the origin lists to read tools as well as changing ones. Off by default.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "ARC_MCP_READ_ONLY",
+          "description": "Set to 1 to expose only the read-only tools. Off by default.",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "ARC_MCP_AUDIT_LOG",
+          "description": "Path of a file that gets one JSON line per changing call (time, tool, tab, origin, ok, error), never typed values or script code. Unset means no audit log.",
           "isRequired": false,
           "isSecret": false,
           "format": "filepath"
