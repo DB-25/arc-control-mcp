@@ -2,6 +2,8 @@ import { ArcError, runJxa } from '../jxa.js';
 import { z, TAB_ID, timeoutMs, MAX_CALLER_TIMEOUT_MS } from './schema.js';
 import { read, write, scoped, runTab, runPage, unwrapPage, sleep, state } from './shared.js';
 import { pageScript } from '../page-lib.js';
+import { windowConfig } from '../window-config.js';
+import { openInAgentWindow } from './open-dedicated.js';
 
 const POLL_MS = 250;
 const LOAD_TIMEOUT_MS = 15000;
@@ -55,14 +57,14 @@ function parseUrl(url) {
 export const tools = [
   {
     name: 'open_url',
-    description: 'Open a URL in Arc. Launches Arc if needed. New tabs go into the agent space when one exists, otherwise the main window. Arc auto-selects new tabs, so the previous selection is put back unless you pass activate.',
+    description: "Open a URL in Arc. Launches Arc if needed. New tabs go into one dedicated agent window (placed on a second display when there is one), never the user's own window, and the user's focused window is put back if Arc raised another. Waits until the user has stopped typing or moving the mouse, and fails with userActive true if they never pause: retry later. Pass activate to bring the tab to the front.",
     input: z.object({
       url: z.string().describe('URL to open'),
       new_tab: z.boolean().default(true).describe('Open a new tab. Set false to navigate an existing tab instead.'),
       tab_id: TAB_ID.describe('With new_tab false, the tab to navigate. Required in that mode unless this agent already has a tab of its own, since navigating the tab the user is looking at is refused.').optional(),
       space: z.string().describe('Space id or title to open into, overriding the agent space').optional(),
       little_arc: z.boolean().default(false).describe('Open a Little Arc window. Fire and forget: Arc does not expose these afterwards.'),
-      activate: z.boolean().default(false).describe('Bring Arc to the front and leave the new tab selected'),
+      activate: z.boolean().default(false).describe('Bring Arc to the front and leave the new tab selected. Visible to the user, so it waits for them to pause.'),
       ...WAIT_OPTIONS
     }),
     annotations: write('Open URL')
@@ -250,7 +252,10 @@ export const handlers = {
   open_url: async (args, extra) => {
     parseUrl(args.url);
 
-    const result = await runTab(
+    // A navigation of an existing tab and a Little Arc are not agent-window
+    // work, so only a plain new tab is routed there.
+    const dedicated = windowConfig.mode === 'dedicated' && args.new_tab !== false && !args.little_arc;
+    const result = dedicated ? await openInAgentWindow(args, OPEN_TIMEOUT_MS) : await runTab(
       args,
       `if (!Arc.running()) { Arc.launch(); delay(1.5); }
        if (P.activate) Arc.activate();
@@ -294,6 +299,7 @@ export const handlers = {
 
     // Only a tab this call created becomes ours. Navigating a tab the caller
     // named must not claim it, or close_own_tabs would later close the user's tab.
+    if (result.ok === false) return result;
     if (result.tab && result.action === 'opened new tab') {
       state.claim(result.tab.id);
       result.tab.mine = true;

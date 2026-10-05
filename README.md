@@ -171,6 +171,13 @@ know to look here.
 Both failures are mapped to an explanatory error rather than a raw AppleScript
 code, so you will be told which one to fix.
 
+A third, **optional** one is Accessibility (System Settings > Privacy & Security
+> Accessibility, for the same app, and Automation for System Events). It is what
+lets the server place the agent window on a second display and put your window
+back in front if Arc raised another. Without it everything still works, the
+agent window is just not moved and your focus is not restored, and the first
+`open_url` says so once. The user-activity gate below needs no permission.
+
 ## Why not just reuse the Chrome server
 
 Arc's scripting dictionary looks like Chrome's but differs in ways that break
@@ -210,10 +217,10 @@ is not disturbed, but nothing is walled off.
   `close_own_tabs` exists for cleanup. No tool refuses a tab you name with an
   explicit `tab_id`. The one refusal above is about an unnamed tab, not a named
   one.
-- **No focus stealing**: Arc auto-selects a newly created tab, so `open_url`
-  puts the previous selection back, and only when Arc actually took it. If the
-  user switched tabs while the page was opening, their choice stands. Pass
-  `activate: true` to opt out.
+- **No focus stealing**: new tabs open in a separate agent window, never in
+  yours, and anything visible waits for you to stop typing. See
+  [The agent window](#the-agent-window-and-the-activity-gate). Pass
+  `activate: true` to opt out of the quiet behaviour.
 - **Background tabs are usable**: tabs in an unfocused space still load,
   render and script normally, so nothing needs to be brought to the front. The
   exception is code a page loads only once something is on screen: see
@@ -244,16 +251,16 @@ loses nothing but a few wasted calls.
 |---|---|
 | `list_tabs` | Every tab, or narrow with `scope: "own"`, `query`, `space`, `window_id`. Rows are flagged `mine` and `isActive`. |
 | `get_current_tab` | The tab a call with no `tab_id` would act on. |
-| `switch_to_tab` | Make a tab active in its window. `activate` also brings Arc to the front. |
+| `switch_to_tab` | Make a tab active in its window. `activate` also brings Arc to the front. Waits for you to stop typing. |
 | `close_tab` | Close one tab. |
 | `close_own_tabs` | Close every tab this agent opened, leaving the user's alone. `include_stale` also closes tabs leaked by a dead previous run of the same label. |
-| `arc_status` | Arc's version and whether it is the frontmost app, owned tabs, whether the agent space exists, what a call with no `tab_id` resolves to (reported separately for read-only and for changing tools), how many stale tabs a previous run left behind, and the [guardrails](#guardrails) this server was started with. |
+| `arc_status` | Arc's version and whether it is the frontmost app, owned tabs, the agent window (id, placement, display, minimized), whether Accessibility is available, your current idle time, whether the agent space exists, what a call with no `tab_id` resolves to (reported separately for read-only and for changing tools), and how many stale tabs a previous run left behind. |
 
 ### Navigation
 
 | Tool | Purpose |
 |---|---|
-| `open_url` | Open a URL, launching Arc if needed. Options for `new_tab`, target `space`, `little_arc`, `activate`, `wait_until_loaded`. |
+| `open_url` | Open a URL in the agent window, launching Arc if needed. Waits for you to stop typing, and reports `focusRestored` and `waitedForUserMs`. Options for `new_tab`, target `space`, `little_arc`, `activate`, `wait_until_loaded`. |
 | `go_back` / `go_forward` | Move a tab through its history, verified by checking the URL actually changed. |
 | `reload_tab` | Reload a tab. |
 | `wait_for_load` | Poll until the document is ready, optionally until the URL contains a substring. Also reads Arc's `loading` flag (see [Loading tabs](#loading-tabs-and-stop_loading)), so a hung page shows up as `ready: "loading"` instead of a stalled call. |
@@ -303,7 +310,7 @@ loses nothing but a few wasted calls.
 | Tool | Purpose |
 |---|---|
 | `list_spaces` | Spaces in the front window with tab counts, which is active, and `topAppCount` for the sidebar favourites that belong to no space. |
-| `focus_space` | Switch the front window to a space. Rarely needed: unfocused tabs are fully scriptable. |
+| `focus_space` | Switch the front window to a space. Rarely needed: unfocused tabs are fully scriptable. Waits for you to stop typing. |
 
 ### Scripting
 
@@ -569,7 +576,11 @@ into the model's context, and from there to wherever your client sends it.
 | Variable | Default | Effect |
 |---|---|---|
 | `ARC_MCP_LABEL` | `default` | Names this agent's tab ownership. Two agents with different labels never see each other's owned tabs. |
-| `ARC_MCP_SPACE` | `Agent` | The Arc space new tabs open into, when a space with that name exists. |
+| `ARC_MCP_SPACE` | `Agent` | With `ARC_MCP_WINDOW=space`, the Arc space new tabs open into, when a space with that name exists. |
+| `ARC_MCP_WINDOW` | `dedicated` | `dedicated`: agent tabs live in one separate agent window. `space`: the old behaviour, tabs go into the `Agent` space of your own window. |
+| `ARC_MCP_WINDOW_PLACEMENT` | `auto` | Where the agent window goes: `auto` (the largest non-main display, otherwise leave it where Arc puts it), `second-display`, `minimized` (experimental), `none`. Needs Accessibility, and is applied once, when the window is created. |
+| `ARC_MCP_IDLE_MS` | `1500` | How long you must have been idle before the server does anything visible. `0` turns the gate off. |
+| `ARC_MCP_IDLE_WAIT_MS` | `15000` | How long to wait for that pause before giving up with `userActive: true`. |
 | `ARC_MCP_STATE_DIR` | `~/Library/Application Support/arc-control-mcp` | Where tab ownership is recorded, so a restarted agent can clean up the tabs its previous run left behind. |
 | `ARC_MCP_ARC_DATA_DIR` | `~/Library/Application Support/Arc` | Where the local data tools read Arc's files from. |
 | `ARC_MCP_ALLOW_HISTORY` | unset | Set to `1` to let `search_history` run. Any other value leaves it off. |
@@ -639,26 +650,88 @@ logged. A page's own error message can quote them, so for `fill`, `fill_form`,
 without the reason. Each `batch` step is logged as its own call. Refused calls
 are logged too. The file is created owner-only.
 
-## Isolation, and why not a separate window
+## The agent window, and the activity gate
 
-An Arc window is not an isolation boundary. Every window showing a space shares
-that space's whole tab list, so a second window displays the same tabs.
-Verified: a scripted new window listed the same 27 tabs as the original.
+The aim is that you can keep working in your own Arc window while an agent
+browses, and that the agent never takes the keyboard from you.
 
-The only real boundary is a **space**. Create one named `Agent` (or set
-`ARC_MCP_SPACE`) and every tab this server opens goes there, out of the sidebar
-you are working in. Without it, tabs open in the main window alongside yours;
-everything still works, they are just visible. `arc_status` reports which mode
-is active.
+### One agent window
 
-Agents are separated from each other as well: each runs its own copy of the
+Agent tabs live in a single dedicated Arc window, not in yours
+(`ARC_MCP_WINDOW=dedicated`, the default). Its id is stored in the state
+directory, shared by every label and session, and finding or creating it runs
+under a cross-process lock. There is **at most one, ever**, and a new one is made
+only when the stored window is truly gone. A minimized window, or one Arc merely
+reports as `visible: false`, is not gone: Accessibility tells a minimized window
+from a closed one, and without Accessibility the server assumes the window is
+still there rather than risk a second one. The reason for the care: Arc honours
+Close Window only when Arc is frontmost and the window focused, and its windows
+have no Accessibility close button, so a stray window cannot be cleaned up from
+here. If you do close the agent window, the next `open_url` makes a new one.
+
+Placement (`ARC_MCP_WINDOW_PLACEMENT`, needs Accessibility, applied once at
+creation so a window you move yourself stays put):
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | The largest display that is not the main one. With a single display the window is left where Arc puts it, which is visible. |
+| `second-display` | Same, and says so in `agentWindow.note` when there is only one display. |
+| `minimized` | **Experimental.** Minimizes the window, and minimizes it again if making a tab brought it back. Not the default because whether minimized tabs keep loading, and whether Arc un-minimizes a window for a new tab, has not been verified. |
+| `none` | Never move it. |
+
+`ARC_MCP_WINDOW=space` restores the old design: tabs go into the `Agent` space
+of your window (an Arc window is not an isolation boundary, since every window
+showing a space lists the same tabs, so a space is the only separation there).
+
+Creating a window or tab raises it, and with Arc frontmost that takes keyboard
+focus from the window you are typing in. `open_url` therefore records which
+window had focus first and puts it back afterwards (`focusRestored: true` in the
+result). Arc's own scripting cannot do that, so it goes through Accessibility.
+Without Accessibility there is no placement and no restore, and `open_url`
+returns an `accessibilityNote` once saying how to grant it.
+
+### The activity gate
+
+Before anything that can change what is on screen or which window has focus, the
+server waits until you have been idle for `ARC_MCP_IDLE_MS` (1500 ms), polling
+every 250 ms for up to `ARC_MCP_IDLE_WAIT_MS` (15 s). Idle time is the HID
+counter from `ioreg -c IOHIDSystem`, which needs no permission. If you never
+pause, the tool returns `ok: false, userActive: true` and an error saying you are
+using the Mac, so the agent should retry later; nothing was opened or moved. On
+success the result carries `waitedForUserMs`. `ARC_MCP_IDLE_MS=0` turns it off.
+
+| Gated (waits for you) | Never gated (background work) |
+|---|---|
+| `open_url` with a new tab, `little_arc` or `activate` | Page scripting and reads on open tabs: `execute_javascript`, `click`, `fill`, `select_option`, `press_key`, `scroll`, `wait_for_*`, `get_*`, `query_elements` |
+| `switch_to_tab`, `focus_space` | `list_tabs`, `list_spaces`, `get_current_tab`, `arc_status` |
+| Creating the agent window, moving it, and the focus restore itself | `go_back`, `go_forward`, `reload_tab`, `open_url` with `new_tab: false`, `close_tab`, `close_own_tabs` |
+
+`batch` is not gated as a whole, but each step goes through the same check, so a
+`switch_to_tab` step waits and a `fill` step does not. If the idle time cannot be
+read, the gate lets the call through and says so in `userIdleCheck`.
+
+### What stays visible
+
+- The agent window itself exists on screen. On a second display it is out of the
+  way; on a single display with `auto` it is a window you can see.
+- `open_url` raises the agent window for a moment. With Accessibility your window
+  is put back in front; without it, Arc may keep the agent window focused.
+- `activate: true`, `switch_to_tab` and `focus_space` are visible on purpose.
+- `little_arc` opens a Little Arc window that Arc does not expose afterwards.
+- Launching Arc, when it is not running, brings it up. `arc_status` and the other
+  reads never launch it.
+- Closing a tab you named by `tab_id` can change what its window shows, and
+  closing the last tab of the agent window may close that window.
+- A page can still make noise by itself (audio, a `window.open`, a dialog),
+  which no tool here controls. Page scripts only move DOM focus inside the tab.
+
+Agents are also separated from each other: each runs its own copy of the
 server, ownership is tracked per session, and `ARC_MCP_LABEL` names it. One
 agent's `list_tabs scope=own` and `close_own_tabs` never see another's tabs,
 even when both use the same label. Tabs left behind by a dead earlier run are
 reported by `arc_status` as stale and only closed if you ask, with
 `close_own_tabs include_stale=true`, so a restart can never sweep away a live
-sibling's tabs. Agents do still share the one `Agent` space in the sidebar,
-since Arc will not let a script create a space.
+sibling's tabs. All agents share the one agent window.
 
 ## Known Arc limitations
 
@@ -811,7 +884,12 @@ src/
   index.js       MCP wiring, --version and --help
   registry.js    composes tool modules, validates tool/handler parity at load
   jxa.js         osascript runner, Arc preamble, error mapping
-  state.js       per-session tab ownership
+  state.js       per-session tab ownership, cross-process lock
+  agent-window.js  find-or-create the one agent window, focus protection
+  placement.js   where the agent window goes (pure geometry)
+  ax.js          Accessibility: window placement and focus
+  window-config.js  ARC_MCP_WINDOW and ARC_MCP_WINDOW_PLACEMENT
+  user-activity.js  the idle gate (HID idle time)
   arc-data.js    reads Arc's sidebar and archive files
   arc-history.js reads Arc's history database from a temporary copy
   policy.js      guardrails: origin rules, read-only mode, audit log
@@ -822,6 +900,7 @@ src/
     shared.js      common schemas and run helpers
     tabs.js        list, switch, close, status
     navigation.js  open, back, forward, reload, wait for load, stop loading
+    open-dedicated.js  open_url into the agent window
     content.js     text, html, structured queries, links, page info
     interact.js    click, fill, select, keys, scroll, wait for selector
     input.js       fill_form, hover, type

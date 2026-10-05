@@ -31,6 +31,7 @@ const HOMEPAGE = 'https://github.com/DB-25/arc-control-mcp';
 const INSTRUCTIONS = `Drives the user's real Arc browser on macOS through Apple Events. Their tabs and their attention are not yours to disturb.
 
 - Call arc_status first. It reports separately what a read-only call and a changing call resolve to when you pass no tab_id.
+- New tabs open in one dedicated agent window, never the user's own, so the user can keep working. open_url, switch_to_tab and focus_space first wait until the user has stopped typing or moving the mouse. If one returns userActive true, the user is busy: do not loop on it, do other work or retry later. Reading and scripting tabs that are already open is never held back.
 - Reading and scripting work fine on background tabs. Prefer passing a tab_id over switch_to_tab or focus_space, which change what the user sees. The exception is code a page loads only once something is on screen: if a control stays disabled or a list never loads in a background tab, switch_to_tab and retry.
 - A tool that CHANGES a tab never falls back to the tab the user is looking at. With no tab_id it uses a tab you opened, or is refused. Read-only tools do fall back, so a bare get_page_content reads whatever the user currently has open.
 - Always pass an explicit tab_id to close_tab. Use close_own_tabs to clean up tabs you opened.
@@ -67,7 +68,11 @@ Register it with Claude Code:
 
 Environment:
   ARC_MCP_LABEL          names this agent's tab ownership (default "default")
-  ARC_MCP_SPACE          Arc space new tabs open into (default "Agent")
+  ARC_MCP_WINDOW         "dedicated" (default) agent window, or "space"
+  ARC_MCP_WINDOW_PLACEMENT  auto (default), second-display, minimized, none
+  ARC_MCP_SPACE          with ARC_MCP_WINDOW=space, the Arc space new tabs open into (default "Agent")
+  ARC_MCP_IDLE_MS        how long the user must be idle before anything visible (default 1500, 0 = off)
+  ARC_MCP_IDLE_WAIT_MS   how long to wait for that pause (default 15000)
   ARC_MCP_STATE_DIR      where per-session tab ownership is stored
   ARC_MCP_ARC_DATA_DIR   where the local data tools read Arc's files (default
                          ~/Library/Application Support/Arc)

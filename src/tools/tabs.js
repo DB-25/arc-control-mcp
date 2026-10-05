@@ -2,6 +2,9 @@ import { runJxa } from '../jxa.js';
 import { z, TAB_ID } from './schema.js';
 import { describePolicy } from '../policy.js';
 import { read, write, scoped, runTab, state } from './shared.js';
+import { agentWindow } from '../agent-window.js';
+import { activity } from '../user-activity.js';
+import { windowConfig } from '../window-config.js';
 
 async function snapshotAll({ withApp = false } = {}) {
   const result = await runJxa(
@@ -42,7 +45,7 @@ export const tools = [
   },
   {
     name: 'switch_to_tab',
-    description: 'Make a tab the active tab in its window. Changes what the user sees, so prefer reading a tab by id when you only need its content.',
+    description: 'Make a tab the active tab in its window. Changes what the user sees, so prefer reading a tab by id when you only need its content. Waits until the user has stopped typing or moving the mouse, and fails with userActive true if they never pause.',
     input: z.object({
       // Mandatory here, so the fallback wording the shared schema carries would
       // only be misleading.
@@ -73,7 +76,7 @@ export const tools = [
   },
   {
     name: 'arc_status',
-    description: 'Report Arc state: its version, whether it is the frontmost app, which tabs this agent owns, whether the agent space exists, what a call with no tab_id resolves to, how many tabs a previous run of this label left behind, and the guardrails (read-only mode, origin rules, audit log) this server was started with. Call it first.',
+    description: 'Report Arc state: its version, whether it is the frontmost app, which tabs this agent owns, the dedicated agent window (id, placement, display, minimized, whether Accessibility is available), the user idle time and activity gate, whether the agent space exists, what a call with no tab_id resolves to, how many tabs a previous run of this label left behind, and the guardrails (read-only mode, origin rules, audit log) this server was started with. Call it first.',
     // strictObject, so the generated schema keeps additionalProperties: false.
     input: z.strictObject({}),
     annotations: read('Arc Status', { openWorld: false })
@@ -83,6 +86,12 @@ export const tools = [
 export const handlers = {
   arc_status: async () => {
     const { tabs, agentSpace, app } = await snapshotAll({ withApp: true });
+    // Read-only and best effort: a failing Accessibility query must not hide
+    // the tab report that was asked for.
+    const [windowStatus, userActivity] = await Promise.all([
+      agentWindow.status().catch((error) => ({ mode: windowConfig.mode, error: error.message })),
+      activity.status()
+    ]);
     const owned = new Set(state.ownedIds());
     const active = tabs.find((t) => t.isActive);
     // Mirrors target() in jxa.js: the agent's own tab only counts while it is
@@ -98,7 +107,12 @@ export const handlers = {
       // seeing each other's tabs. The file is where a restart looks for leaks.
       sessionId: state.sessionId(),
       stateFile: state.stateFile(),
-      isolation: agentSpace ? 'space' : 'shared-window',
+      isolation: windowConfig.mode === 'dedicated' ? 'agent-window' : agentSpace ? 'space' : 'shared-window',
+      // Where agent tabs go, and whether Accessibility lets the server place the
+      // window and keep the user's focus.
+      agentWindow: windowStatus,
+      // The gate that holds back anything visible while the user is typing.
+      userActivity,
       agentSpace,
       agentSpaceName: state.AGENT_SPACE,
       // A read-only tool and one that changes a tab no longer resolve the same

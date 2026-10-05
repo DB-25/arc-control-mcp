@@ -103,25 +103,51 @@ const sleepSync = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)
 function withLock(fn) {
   const deadline = Date.now() + LOCK_WAIT_MS;
   let fd;
-  for (;;) {
-    try {
-      fd = openSync(LOCK_FILE, 'wx');
-      break;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      if (Date.now() > deadline) {
-        rmSync(LOCK_FILE, { force: true });
-        fd = openSync(LOCK_FILE, 'w');
-        break;
-      }
-      sleepSync(LOCK_RETRY_MS);
-    }
-  }
+  while ((fd = openLock(LOCK_FILE, deadline)) === null) sleepSync(LOCK_RETRY_MS);
   try {
     return fn();
   } finally {
     closeSync(fd);
     rmSync(LOCK_FILE, { force: true });
+  }
+}
+
+/**
+ * One attempt at taking a lock file: the descriptor on success, null when
+ * someone else holds it. Past the deadline the holder is presumed dead and the
+ * lock is broken, so it is returned rather than left to wedge every later call.
+ */
+function openLock(lockFile, deadline) {
+  try {
+    return openSync(lockFile, 'wx');
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    if (Date.now() <= deadline) return null;
+    rmSync(lockFile, { force: true });
+    return openSync(lockFile, 'w');
+  }
+}
+
+// Creating a window takes seconds, far longer than a state-file write, so the
+// holder is given far longer before it is presumed dead.
+const ASYNC_LOCK_WAIT_MS = 30000;
+const ASYNC_LOCK_RETRY_MS = 50;
+
+/**
+ * The same cross-process mutex for work that awaits, such as finding or
+ * creating the shared agent window: two sessions must not both create one.
+ */
+export async function withLockAsync(lockFile, fn, waitMs = ASYNC_LOCK_WAIT_MS) {
+  const deadline = Date.now() + waitMs;
+  let fd;
+  while ((fd = openLock(lockFile, deadline)) === null) {
+    await new Promise((resolve) => setTimeout(resolve, ASYNC_LOCK_RETRY_MS));
+  }
+  try {
+    return await fn();
+  } finally {
+    closeSync(fd);
+    rmSync(lockFile, { force: true });
   }
 }
 
@@ -181,6 +207,7 @@ export const isOwned = (tabId) => session.owned.has(tabId);
 export const label = () => LABEL;
 export const sessionId = () => SESSION_ID;
 export const stateFile = () => STATE_FILE;
+export const stateDir = () => STATE_DIR;
 
 /**
  * Tabs left behind by dead sessions of this label. Cleanup can reap these
