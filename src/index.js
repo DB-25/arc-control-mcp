@@ -15,6 +15,7 @@ import {
 
 import { TOOLS, HANDLERS, MODULE_NAMES } from './registry.js';
 import { ArcError } from './jxa.js';
+import { toContent } from './result.js';
 
 // Single source of truth for the version. Hardcoding it here once let the
 // server report 0.2.0 while package.json still said 0.1.0.
@@ -103,7 +104,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   try {
     const result = await handler(args, extra);
     return {
-      content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+      content: toContent(result),
       ...(failed(result) ? { isError: true } : {})
     };
   } catch (error) {

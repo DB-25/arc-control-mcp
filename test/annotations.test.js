@@ -36,7 +36,9 @@ const ARC_METADATA_TOOLS = [
   'close_own_tabs',
   'arc_status',
   'list_spaces',
-  'focus_space'
+  'focus_space',
+  // Reports on the DevTools port, not on any page.
+  'cdp_status'
 ];
 
 describe('destructive hints match what the tool can actually do', () => {
