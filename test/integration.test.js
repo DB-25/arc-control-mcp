@@ -60,7 +60,7 @@ const { handlers: content } = await import('../src/tools/content.js');
 const { handlers: interact } = await import('../src/tools/interact.js');
 const { handlers: scripting } = await import('../src/tools/scripting.js');
 // Binds batch's tool lookup, as src/index.js does at startup.
-await import('../src/registry.js');
+const { HANDLERS } = await import('../src/registry.js');
 const { ArcError } = await import('../src/jxa.js');
 const state = await import('../src/state.js');
 
@@ -422,5 +422,36 @@ describe('integration: drives the real Arc browser', () => {
         `the cancelled wait ran for ${elapsed}ms of its ${MAX_CALLER_TIMEOUT_MS}ms budget`
       );
     });
+  });
+});
+
+// Reads the user's real sidebar file, so it asserts on numbers alone and never
+// prints, logs or compares a title or URL. It opens no tabs.
+describe('integration: local data agrees with live Arc', () => {
+  // Arc writes the file periodically and other agents open tabs, so an exact
+  // match would be flaky. A sidebar item id being the live tab id is what is
+  // being proved, and that shows as most tabs matching.
+  const MIN_MATCH_RATIO = 0.8;
+
+  it('sidebar_tree item ids are the tab ids list_tabs reports', { skip }, async () => {
+    const tree = await HANDLERS.sidebar_tree({ match_live: true, include_urls: false, max_items: 2000 });
+    if (!tree.ok && /was not found/.test(tree.error)) return;
+    assert.equal(tree.ok, true, 'sidebar_tree failed on the real profile');
+    assert.equal(tree.liveError, undefined, 'could not ask Arc which tabs are open');
+
+    const live = await tabTools.list_tabs({ scope: 'all' });
+    const liveIds = new Set(live.tabs.map((t) => t.id));
+    const sidebarTabs = [];
+    const collect = (nodes) => nodes.forEach((n) => (n.kind === 'tab' ? sidebarTabs.push(n) : collect(n.children)));
+    for (const space of tree.spaces) collect([...space.pinned, ...space.unpinned]);
+    collect(tree.topApps);
+
+    const matched = sidebarTabs.filter((t) => liveIds.has(t.id)).length;
+    assert.equal(sidebarTabs.length, tree.returnedTabs);
+    assert.equal(sidebarTabs.filter((t) => t.live).length, matched, 'match_live disagrees with list_tabs');
+    assert.ok(
+      sidebarTabs.length === 0 || matched / sidebarTabs.length >= MIN_MATCH_RATIO,
+      `only ${matched} of ${sidebarTabs.length} sidebar tabs matched a live tab id`
+    );
   });
 });
