@@ -6,7 +6,8 @@
 import { CdpError } from './client.js';
 import { CdpUnavailable, engine as defaultEngine, setupInstructions, SECURITY_WARNING } from './engine.js';
 import { MARKER_ATTRIBUTE } from './mapping.js';
-import { bindTab } from './tab.js';
+import { bindTab, fail } from './tab.js';
+import { isSemantic, stampTarget, clearStamps } from './stamp.js';
 import { runPage, runTab, state } from '../tools/shared.js';
 
 const TAB_INFO_TIMEOUT_MS = 2000;
@@ -15,7 +16,7 @@ const TAB_INFO_TIMEOUT_MS = 2000;
  * The seams tests replace: the engine, and the Arc side of tab resolution
  * (which needs a real Arc). Everything else runs as shipped.
  */
-export const deps = { engine: defaultEngine, resolveTab: resolveArcTab };
+export const deps = { engine: defaultEngine, resolveTab: resolveArcTab, stamp: stampTarget };
 
 /**
  * Arc side of the mapping. A tool that changes a tab never reaches the user's
@@ -71,11 +72,47 @@ async function tabInfo(client, targetId, tabId) {
 }
 
 /**
- * Run `fn(t)` against the tab a call resolves to. `interacts` marks tools that
- * need the page to respond: they are refused while a dialog blocks it, since
- * they would only hang. Reading captured buffers does not.
+ * Semantic selectors in `selectors` (pairs of argument names, such as
+ * { selector: 'selector', nth: 'nth' }) are resolved on the Apple Event side and
+ * replaced by a stamp the CDP side can select by. Returns the rewritten args,
+ * the stamps taken, or the failure to report.
  */
-export async function runCdp(args, extra, { interacts = true } = {}, fn) {
+async function resolveSemantic(args, selectors, tabId) {
+  const stamps = [];
+  let resolved = args;
+  for (const { selector: key, nth: nthKey, exact: exactKey = 'exact' } of selectors) {
+    const selector = args[key];
+    if (!isSemantic(selector)) continue;
+    const stamp = await deps.stamp(tabId, { selector, nth: args[nthKey], exact: args[exactKey] });
+    if (!stamp.found) return { stamps, failure: fail(`No element matches ${selector}`, { matches: stamp.matches }) };
+    stamps.push({ ...stamp, original: selector });
+    // The stamped element is the only match, so the index it was picked by no longer applies.
+    resolved = { ...resolved, [key]: stamp.selector, [nthKey]: 0 };
+  }
+  return { stamps, args: resolved };
+}
+
+/** Put what the caller wrote back into a result that quotes the stamp selector. */
+function restoreSelectors(result, stamps) {
+  if (stamps.length === 0) return result;
+  const out = { ...result };
+  const text = (value) => stamps.reduce((acc, s) => acc.replaceAll(s.selector, s.original), value);
+  if (typeof out.error === 'string') out.error = text(out.error);
+  if (typeof out.warning === 'string') out.warning = text(out.warning);
+  // One element was stamped, so the CDP side saw one match; the caller wants the real count.
+  if (stamps.length === 1 && out.matches !== undefined) out.matches = stamps[0].matches;
+  if (stamps.some((s) => s.reResolved)) out.reResolved = true;
+  return out;
+}
+
+/**
+ * Run `fn(t, tab, args)` against the tab a call resolves to. `interacts` marks
+ * tools that need the page to respond: they are refused while a dialog blocks
+ * it, since they would only hang. Reading captured buffers does not.
+ * `selectors` names the selector arguments that may be ref=, role=, label= or
+ * placeholder=; fn must use the args it is handed, in which they are replaced.
+ */
+export async function runCdp(args, extra, { interacts = true, selectors = [] } = {}, fn) {
   const ctx = { signal: extra?.signal, timeoutMs: args.timeout_ms };
   const { engine } = deps;
   try {
@@ -92,7 +129,19 @@ export async function runCdp(args, extra, { interacts = true } = {}, fn) {
       };
     }
 
-    const result = await fn(bindTab(tab, ctx), tab);
+    const prepared = await resolveSemantic(args, selectors, tabId);
+    if (prepared.failure) return { ...prepared.failure, tab: await tabInfo(client, targetId, tabId) };
+
+    const t = bindTab(tab, ctx);
+    let result;
+    let cleaned = true;
+    try {
+      result = await fn(t, tab, prepared.args);
+    } finally {
+      cleaned = await clearStamps(t, prepared.stamps.map((s) => s.nonce));
+    }
+    result = restoreSelectors(result, prepared.stamps);
+    if (!cleaned) result.note ??= 'A temporary data-arc-mcp-target attribute may remain on the element. It is harmless and is removed by the next call.';
     // A dialog that opened as a side effect is reported even by tools that
     // were not looking for one.
     if (!result.dialog && tab.capture.dialog) {

@@ -22,7 +22,14 @@ const MAX_UPLOAD_FILES = 20;
 const MAX_DRAG_STEPS = 100;
 const MAX_CLICKS = 3;
 
-const MATCH_EXACT = EXACT.describe('For "text=" selectors, require the whole trimmed text to equal the label. No effect on CSS selectors.');
+// Which arguments of a tool name an element, for runCdp to resolve when one is a ref= or role= selector.
+const SELECTOR_ARG = { selector: 'selector', nth: 'nth' };
+const DRAG_SELECTORS = [
+  { selector: 'from_selector', nth: 'from_nth' },
+  { selector: 'to_selector', nth: 'to_nth' }
+];
+
+const MATCH_EXACT = EXACT.describe('For "text=", "label=" and "placeholder=" selectors, require the whole trimmed text to equal the label. No effect on CSS, ref= or role= selectors.');
 const LIMIT = z.number().min(1).max(MAX_LISTED).default(DEFAULT_LISTED).describe(`Newest entries to return, at most ${MAX_LISTED}`);
 
 const CAPTURE_NOTE =
@@ -47,7 +54,7 @@ export const tools = [
       'Prefer jpeg with a quality for a long page, since a large PNG is a lot of tokens.',
     input: z.object({
       tab_id: TAB_ID.optional(),
-      selector: SELECTOR.describe('Capture just this element instead of the viewport. CSS selector, or "text=Label".').optional(),
+      selector: SELECTOR.describe('Capture just this element instead of the viewport. CSS selector, "text=Label", or ref=, role=, label=, placeholder= as in click.').optional(),
       nth: NTH.describe('Which match to capture when several exist, 0-based'),
       exact: MATCH_EXACT,
       full_page: z.boolean().default(false).describe('Capture the whole scrollable page, not just the viewport. Not combinable with selector.'),
@@ -82,7 +89,7 @@ export const tools = [
       'With no selector it types into the element that already has focus. Refuses a disabled, readonly or non-text element. The result reports the field value afterwards (a password reports only its length).',
     input: z.object({
       text: z.string().describe('Text to type'),
-      selector: SELECTOR.describe('Field to focus first. CSS selector, or "text=Label". Omit to type into the focused element.').optional(),
+      selector: SELECTOR.describe('Field to focus first. CSS selector, "text=Label", or ref=, role=, label=, placeholder= as in click. Omit to type into the focused element.').optional(),
       tab_id: TAB_ID.optional(),
       nth: NTH,
       exact: MATCH_EXACT,
@@ -99,7 +106,7 @@ export const tools = [
       'Optionally focuses a selector first. Reports the element that has focus afterwards.',
     input: z.object({
       key: z.string().describe('Key or combination, for example Enter, Tab, ArrowDown, Meta+A, Shift+Tab'),
-      selector: SELECTOR.describe('Focus this element first. CSS selector, or "text=Label". Omit to press into whatever has focus.').optional(),
+      selector: SELECTOR.describe('Focus this element first. CSS selector, "text=Label", or ref=, role=, label=, placeholder= as in click. Omit to press into whatever has focus.').optional(),
       tab_id: TAB_ID.optional(),
       nth: NTH,
       exact: MATCH_EXACT
@@ -120,11 +127,11 @@ export const tools = [
       'Needs the DevTools engine. Top-level page only.',
     input: z.object({
       tab_id: TAB_ID.optional(),
-      from_selector: SELECTOR.describe('Element to press on. CSS selector, or "text=Label".').optional(),
+      from_selector: SELECTOR.describe('Element to press on. CSS selector, "text=Label", or ref=, role=, label=, placeholder= as in click.').optional(),
       from_nth: NTH.describe('Which from_selector match to use, 0-based'),
       from_x: z.number().describe('Start x in viewport pixels, instead of from_selector').optional(),
       from_y: z.number().describe('Start y in viewport pixels, instead of from_selector').optional(),
-      to_selector: SELECTOR.describe('Element to release on. CSS selector, or "text=Label".').optional(),
+      to_selector: SELECTOR.describe('Element to release on. CSS selector, "text=Label", or ref=, role=, label=, placeholder= as in click.').optional(),
       to_nth: NTH.describe('Which to_selector match to use, 0-based'),
       to_x: z.number().describe('End x in viewport pixels, instead of to_selector').optional(),
       to_y: z.number().describe('End y in viewport pixels, instead of to_selector').optional(),
@@ -138,7 +145,7 @@ export const tools = [
       'Set the files of an <input type=file>, as if chosen in the file picker. Paths must be absolute and point at existing regular files; anything else is refused, as are credential and browser-profile files (~/.ssh, ~/.aws, Arc\'s own profile, .env, and similar). ' +
       'The page receives its normal input and change events. Needs the DevTools engine. Many sites hide the real input behind a button: select the hidden input element itself.',
     input: z.object({
-      selector: SELECTOR.describe('The file input: a CSS selector such as input[type=file], or "text=Label".'),
+      selector: SELECTOR.describe('The file input: a CSS selector such as input[type=file], "text=Label", or ref=, role=, label=, placeholder= as in click.'),
       paths: z.array(z.string()).min(1).max(MAX_UPLOAD_FILES).describe('Absolute paths of the files to attach'),
       tab_id: TAB_ID.optional(),
       nth: NTH,
@@ -221,15 +228,15 @@ export const handlers = {
     if (args.selector && args.full_page) {
       return fail('Choose either selector or full_page, not both.');
     }
-    return runCdp(args, extra, {}, (t) => screenshot(t, args));
+    return runCdp(args, extra, { selectors: [SELECTOR_ARG] }, (t, tab, a) => screenshot(t, a));
   },
 
-  trusted_click: (args, extra) => runCdp(args, extra, {}, (t) => trustedClick(t, args)),
-  trusted_type: (args, extra) => runCdp(args, extra, {}, (t) => trustedType(t, args)),
-  trusted_press_key: (args, extra) => runCdp(args, extra, {}, (t) => trustedPressKey(t, args)),
-  trusted_hover: (args, extra) => runCdp(args, extra, {}, (t) => trustedHover(t, args)),
-  drag: (args, extra) => runCdp(args, extra, {}, (t) => drag(t, args)),
-  upload_file: (args, extra) => runCdp(args, extra, {}, (t) => uploadFile(t, args)),
+  trusted_click: (args, extra) => runCdp(args, extra, { selectors: [SELECTOR_ARG] }, (t, tab, a) => trustedClick(t, a)),
+  trusted_type: (args, extra) => runCdp(args, extra, { selectors: [SELECTOR_ARG] }, (t, tab, a) => trustedType(t, a)),
+  trusted_press_key: (args, extra) => runCdp(args, extra, { selectors: [SELECTOR_ARG] }, (t, tab, a) => trustedPressKey(t, a)),
+  trusted_hover: (args, extra) => runCdp(args, extra, { selectors: [SELECTOR_ARG] }, (t, tab, a) => trustedHover(t, a)),
+  drag: (args, extra) => runCdp(args, extra, { selectors: DRAG_SELECTORS }, (t, tab, a) => drag(t, a)),
+  upload_file: (args, extra) => runCdp(args, extra, { selectors: [SELECTOR_ARG] }, (t, tab, a) => uploadFile(t, a)),
 
   // Not gated on a pending dialog: it is the way out of one.
   handle_dialog: (args, extra) => runCdp(args, extra, { interacts: false }, (t) => handleDialog(t, args)),

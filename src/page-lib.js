@@ -48,7 +48,7 @@ var A = (function () {
     api.last = { reResolved: false };
     if (SEMANTIC.test(selector)) {
       if (!api.semantic) {
-        throw new Error('The selector "' + selector + '" needs the semantic helpers, which are injected only when the script text mentions ref=, role=, label= or placeholder=. Write the selector as a literal in the script.');
+        throw new Error('The selector "' + selector + '" needs the semantic helpers, and this script was built without them. The tools resolve ref=, role=, label= and placeholder= selectors before the page script runs (DevTools tools do it on the Arc side, since the ref table is not visible from the page itself), so a selector reaching this point was assembled at run time. Pass it to the tool as its selector argument instead of building it inside a script.');
       }
       return api.semantic(selector, root, opts);
     }

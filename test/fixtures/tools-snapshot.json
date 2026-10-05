@@ -1205,7 +1205,7 @@
         },
         "selector": {
           "type": "string",
-          "description": "Capture just this element instead of the viewport. CSS selector, or \"text=Label\"."
+          "description": "Capture just this element instead of the viewport. CSS selector, \"text=Label\", or ref=, role=, label=, placeholder= as in click."
         },
         "nth": {
           "default": 0,
@@ -1214,7 +1214,7 @@
         },
         "exact": {
           "default": false,
-          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label. No effect on CSS selectors.",
+          "description": "For \"text=\", \"label=\" and \"placeholder=\" selectors, require the whole trimmed text to equal the label. No effect on CSS, ref= or role= selectors.",
           "type": "boolean"
         },
         "full_page": {
@@ -1281,7 +1281,7 @@
         },
         "exact": {
           "default": false,
-          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label. No effect on CSS selectors.",
+          "description": "For \"text=\", \"label=\" and \"placeholder=\" selectors, require the whole trimmed text to equal the label. No effect on CSS, ref= or role= selectors.",
           "type": "boolean"
         },
         "button": {
@@ -1327,7 +1327,7 @@
         },
         "selector": {
           "type": "string",
-          "description": "Field to focus first. CSS selector, or \"text=Label\". Omit to type into the focused element."
+          "description": "Field to focus first. CSS selector, \"text=Label\", or ref=, role=, label=, placeholder= as in click. Omit to type into the focused element."
         },
         "tab_id": {
           "type": "string",
@@ -1340,7 +1340,7 @@
         },
         "exact": {
           "default": false,
-          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label. No effect on CSS selectors.",
+          "description": "For \"text=\", \"label=\" and \"placeholder=\" selectors, require the whole trimmed text to equal the label. No effect on CSS, ref= or role= selectors.",
           "type": "boolean"
         },
         "per_key": {
@@ -1379,7 +1379,7 @@
         },
         "selector": {
           "type": "string",
-          "description": "Focus this element first. CSS selector, or \"text=Label\". Omit to press into whatever has focus."
+          "description": "Focus this element first. CSS selector, \"text=Label\", or ref=, role=, label=, placeholder= as in click. Omit to press into whatever has focus."
         },
         "tab_id": {
           "type": "string",
@@ -1392,7 +1392,7 @@
         },
         "exact": {
           "default": false,
-          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label. No effect on CSS selectors.",
+          "description": "For \"text=\", \"label=\" and \"placeholder=\" selectors, require the whole trimmed text to equal the label. No effect on CSS, ref= or role= selectors.",
           "type": "boolean"
         }
       },
@@ -1430,7 +1430,7 @@
         },
         "exact": {
           "default": false,
-          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label. No effect on CSS selectors.",
+          "description": "For \"text=\", \"label=\" and \"placeholder=\" selectors, require the whole trimmed text to equal the label. No effect on CSS, ref= or role= selectors.",
           "type": "boolean"
         }
       },
@@ -1459,7 +1459,7 @@
         },
         "from_selector": {
           "type": "string",
-          "description": "Element to press on. CSS selector, or \"text=Label\"."
+          "description": "Element to press on. CSS selector, \"text=Label\", or ref=, role=, label=, placeholder= as in click."
         },
         "from_nth": {
           "default": 0,
@@ -1476,7 +1476,7 @@
         },
         "to_selector": {
           "type": "string",
-          "description": "Element to release on. CSS selector, or \"text=Label\"."
+          "description": "Element to release on. CSS selector, \"text=Label\", or ref=, role=, label=, placeholder= as in click."
         },
         "to_nth": {
           "default": 0,
@@ -1517,7 +1517,7 @@
       "properties": {
         "selector": {
           "type": "string",
-          "description": "The file input: a CSS selector such as input[type=file], or \"text=Label\"."
+          "description": "The file input: a CSS selector such as input[type=file], \"text=Label\", or ref=, role=, label=, placeholder= as in click."
         },
         "paths": {
           "minItems": 1,
@@ -1539,7 +1539,7 @@
         },
         "exact": {
           "default": false,
-          "description": "For \"text=\" selectors, require the whole trimmed text to equal the label. No effect on CSS selectors.",
+          "description": "For \"text=\", \"label=\" and \"placeholder=\" selectors, require the whole trimmed text to equal the label. No effect on CSS, ref= or role= selectors.",
           "type": "boolean"
         }
       },

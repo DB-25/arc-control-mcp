@@ -52,6 +52,8 @@ describe('the snapshot helpers', () => {
     const context = vm.createContext({ document: {} });
     vm.runInContext(PAGE_LIB, context);
     assert.throws(() => vm.runInContext('A.all("ref=e1")', context), /needs the semantic helpers/);
+    // Writing a literal cannot help a DevTools script, so the error must not suggest it.
+    assert.throws(() => vm.runInContext('A.all("ref=e1")', context), (e) => !/as a literal/.test(e.message));
   });
 });
 
