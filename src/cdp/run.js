@@ -9,6 +9,7 @@ import { MARKER_ATTRIBUTE } from './mapping.js';
 import { bindTab, fail } from './tab.js';
 import { isSemantic, stampTarget, clearStamps } from './stamp.js';
 import { runPage, runTab, state } from '../tools/shared.js';
+import { agentWindow } from '../agent-window.js';
 
 const TAB_INFO_TIMEOUT_MS = 2000;
 
@@ -16,7 +17,7 @@ const TAB_INFO_TIMEOUT_MS = 2000;
  * The seams tests replace: the engine, and the Arc side of tab resolution
  * (which needs a real Arc). Everything else runs as shipped.
  */
-export const deps = { engine: defaultEngine, resolveTab: resolveArcTab, stamp: stampTarget };
+export const deps = { engine: defaultEngine, resolveTab: resolveArcTab, stamp: stampTarget, focus: agentWindow };
 
 /**
  * Arc side of the mapping. A tool that changes a tab never reaches the user's

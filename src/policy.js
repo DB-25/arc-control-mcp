@@ -214,6 +214,8 @@ export function createGuard(policy, { resolveTab, audit = () => {}, now = () => 
   return function guard(tool, handler) {
     const { readOnlyHint, openWorldHint } = tool.annotations;
     const isRead = readOnlyHint === true;
+    // A read that must still resolve like a changing tool (see registry.js).
+    const mayUseActiveTab = isRead && tool.ownTabOnly !== true;
     // batch checks nothing itself: its steps go through the wrapped handlers and
     // are checked, and logged, one by one.
     const isBatch = tool.name === 'batch';
@@ -252,7 +254,7 @@ export function createGuard(policy, { resolveTab, audit = () => {}, now = () => 
             return result;
           }
         } else if (gated) {
-          const peeked = await resolveTab(args, isRead);
+          const peeked = await resolveTab(args, mayUseActiveTab);
           tabId = peeked.id;
           origin = originOf(peeked.url);
           const violation = checkUrl(policy, peeked.url);

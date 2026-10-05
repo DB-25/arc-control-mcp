@@ -117,23 +117,28 @@ export const handlers = {
       agentSpaceName: state.AGENT_SPACE,
       // A read-only tool and one that changes a tab no longer resolve the same
       // way once this agent owns no tab, so each gets its own answer rather
-      // than one reason that is only half true.
-      resolvesTo: ownTab
-        ? {
-            readOnly: { reason: "this agent's current tab", tab: ownTab },
-            mutating: { reason: "this agent's current tab", tab: ownTab }
-          }
-        : {
-            readOnly: {
-              reason: 'no agent tab, so a read-only tool falls back to the tab the user is looking at',
-              tab: active || null
-            },
-            mutating: {
-              reason:
-                "no agent tab, so a tool that changes a tab is refused rather than acting on the user's tab. Pass a tab_id from list_tabs, or call open_url first.",
-              tab: null
+      // than one reason that is only half true. screenshot, console_messages
+      // and network_requests read but attach a debugger, so they follow the
+      // "mutating" answer (see ownTabOnly in registry.js).
+      resolvesTo: {
+        ...(ownTab
+          ? {
+              readOnly: { reason: "this agent's current tab", tab: ownTab },
+              mutating: { reason: "this agent's current tab", tab: ownTab }
             }
-          },
+          : {
+              readOnly: {
+                reason: 'no agent tab, so a read-only tool falls back to the tab the user is looking at',
+                tab: active || null
+              },
+              mutating: {
+                reason:
+                  "no agent tab, so a tool that changes a tab is refused rather than acting on the user's tab. Pass a tab_id from list_tabs, or call open_url first.",
+                tab: null
+              }
+            }),
+        readsThatResolveAsMutating: ['screenshot', 'console_messages', 'network_requests']
+      },
       ownTabs: tabs.filter((t) => owned.has(t.id)),
       staleTabCount: state.staleIds().length,
       otherTabCount: tabs.filter((t) => !owned.has(t.id)).length

@@ -29,6 +29,13 @@ const DRAG_SELECTORS = [
   { selector: 'to_selector', nth: 'to_nth' }
 ];
 
+// These read, but they attach a debugger to the tab, so with no tab_id they
+// resolve like a changing tool (an own tab, or a refusal) and never to the tab
+// the user is looking at.
+const OWN_TAB_ID = TAB_ID.describe(
+  'Arc tab id from list_tabs. Omit to use the tab you opened last. Unlike other read tools this never falls back to the tab the user is looking at: with no id and no tab of yours it is refused, so pass this or call open_url first.'
+);
+
 const MATCH_EXACT = EXACT.describe('For "text=", "label=" and "placeholder=" selectors, require the whole trimmed text to equal the label. No effect on CSS, ref= or role= selectors.');
 const LIMIT = z.number().min(1).max(MAX_LISTED).default(DEFAULT_LISTED).describe(`Newest entries to return, at most ${MAX_LISTED}`);
 
@@ -50,19 +57,20 @@ export const tools = [
     name: 'screenshot',
     description:
       'Take a screenshot of a tab and return it as an image: the viewport, the whole page (full_page), or one element (selector). Needs the DevTools engine (see cdp_status). ' +
-      'Works on a background tab without bringing it forward; pass activate true only if you want Arc to show it. A full page is capped at 16384 px tall and the result says when it was cut. ' +
+      'Works on a background tab without bringing it forward; pass activate true only if you want Arc to show it (that waits for the user to pause, like open_url, and restores their focus afterwards). A full page is capped at 16384 px tall and the result says when it was cut. ' +
       'Prefer jpeg with a quality for a long page, since a large PNG is a lot of tokens.',
     input: z.object({
-      tab_id: TAB_ID.optional(),
+      tab_id: OWN_TAB_ID.optional(),
       selector: SELECTOR.describe('Capture just this element instead of the viewport. CSS selector, "text=Label", or ref=, role=, label=, placeholder= as in click.').optional(),
       nth: NTH.describe('Which match to capture when several exist, 0-based'),
       exact: MATCH_EXACT,
       full_page: z.boolean().default(false).describe('Capture the whole scrollable page, not just the viewport. Not combinable with selector.'),
       format: z.enum(['png', 'jpeg']).default('png').describe('Image format'),
       quality: z.number().min(1).max(100).default(80).describe('JPEG quality, 1-100. Ignored for png.'),
-      activate: z.boolean().default(false).describe('Bring the tab to the front first. This changes what the user sees, so leave it off unless needed.'),
+      activate: z.boolean().default(false).describe('Bring the tab to the front first. This changes what the user sees, so leave it off unless needed. It waits until the user has stopped typing, fails with userActive true if they never pause, and puts their window and application back in front afterwards (focusRestored says whether that worked).'),
       timeout_ms: timeoutMs(SCREENSHOT_TIMEOUT_MS, 'Give up on the capture after this long.')
     }),
+    ownTabOnly: true,
     annotations: read('Screenshot')
   },
   {
@@ -171,11 +179,12 @@ export const tools = [
       'Read the console output of a tab: console.log and friends, uncaught exceptions, and the browser\'s own messages (blocked requests, CSP violations). Newest last. Needs the DevTools engine. ' +
       CAPTURE_NOTE,
     input: z.object({
-      tab_id: TAB_ID.optional(),
+      tab_id: OWN_TAB_ID.optional(),
       level: z.enum(['all', 'error', 'warning', 'info', 'log', 'debug']).default('all').describe('Only entries of this level'),
       limit: LIMIT,
       clear: z.boolean().default(false).describe('Empty this tab\'s console buffer after reading, so the next call shows only what is new')
     }),
+    ownTabOnly: true,
     annotations: read('Console Messages')
   },
   {
@@ -185,7 +194,7 @@ export const tools = [
       'Note that URLs are reported as they are, query string included. ' +
       CAPTURE_NOTE,
     input: z.object({
-      tab_id: TAB_ID.optional(),
+      tab_id: OWN_TAB_ID.optional(),
       url_contains: z.string().describe('Only requests whose url contains this text').optional(),
       type: z.string().describe('Only this resource type, for example Fetch, XHR, Document, Script, Image').optional(),
       failed_only: z.boolean().default(false).describe('Only requests that failed or returned status 400 or above'),
@@ -193,9 +202,27 @@ export const tools = [
       include_headers: z.boolean().default(false).describe('Include request and response headers, with credential headers redacted'),
       clear: z.boolean().default(false).describe('Empty this tab\'s network buffer after reading')
     }),
+    ownTabOnly: true,
     annotations: read('Network Requests')
   }
 ];
+
+/**
+ * Page.bringToFront can bring Arc forward over the application the user is in
+ * and raise another Arc window. Like every other visible operation, the
+ * screenshot puts both back (the tab stays selected in its own window), and
+ * says whether it managed to. The tool wrapper has already waited for the user
+ * to pause.
+ */
+async function withFocusRestored(take) {
+  const done = await deps.focus.protectFocus(take);
+  return {
+    ...done.value,
+    focusRestored: done.focusRestored,
+    ...(done.waitedForUserMs ? { waitedForUserMs: (done.value.waitedForUserMs || 0) + done.waitedForUserMs } : {}),
+    ...(done.focusRestoreError ? { focusRestoreError: done.focusRestoreError } : {})
+  };
+}
 
 export const handlers = {
   cdp_status: async () => {
@@ -228,7 +255,8 @@ export const handlers = {
     if (args.selector && args.full_page) {
       return fail('Choose either selector or full_page, not both.');
     }
-    return runCdp(args, extra, { selectors: [SELECTOR_ARG] }, (t, tab, a) => screenshot(t, a));
+    const take = () => runCdp(args, extra, { selectors: [SELECTOR_ARG] }, (t, tab, a) => screenshot(t, a));
+    return args.activate === true ? withFocusRestored(take) : take();
   },
 
   trusted_click: (args, extra) => runCdp(args, extra, { selectors: [SELECTOR_ARG] }, (t, tab, a) => trustedClick(t, a)),

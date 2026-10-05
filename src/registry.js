@@ -76,7 +76,9 @@ function validate(moduleName, tool) {
  * acceptable.
  */
 function wrap(tool, handler) {
-  const allowActiveTab = tool.annotations.readOnlyHint === true;
+  // A read-only tool may read the tab the user is looking at, unless it asks to
+  // be treated like a changing one (it attaches a debugger to the tab it reads).
+  const allowActiveTab = tool.annotations.readOnlyHint === true && tool.ownTabOnly !== true;
   return async (args = {}, extra) => {
     const parsed = tool.input.safeParse(args ?? {});
     if (!parsed.success) {
@@ -101,7 +103,7 @@ for (const [name, module] of Object.entries(MODULES)) {
     const inputSchema = validate(name, tool);
     // Display precedence is top-level title, then annotations.title, then name.
     // Deriving it here beats repeating the same string on 26 tool definitions.
-    const { input, ...rest } = tool;
+    const { input, ownTabOnly, ...rest } = tool;
     // Read-only mode hides every changing tool from tools/list, and still
     // answers a call to one by name, so a client with a stale list gets a clear
     // refusal rather than "Unknown tool".

@@ -202,6 +202,14 @@ describe('origin enforcement', () => {
     assert.equal(strict.calls.length, 0);
   });
 
+  it('vets a read that attaches a debugger like a changing tool, never the active tab', async () => {
+    const h = harness({ ARC_MCP_BLOCKED_ORIGINS: 'www.bank.test', ARC_MCP_BLOCK_READS: '1' }, { own: 'https://example.com/' });
+    const shot = h.wrap({ ...tool('screenshot', READ), ownTabOnly: true }, { ok: true });
+    await shot({});
+    assert.equal(h.resolved[0].allowActive, false);
+    assert.equal(h.calls[0].args.tab_id, 'own', 'the vetted own tab is the one acted on');
+  });
+
   it('does not gate Arc bookkeeping tools or batch itself', async () => {
     const h = harness({ ARC_MCP_ALLOWED_ORIGINS: 'example.com' }, {});
     const close = h.wrap(tool('close_tab', BOOKKEEPING));

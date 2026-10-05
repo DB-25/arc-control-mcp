@@ -1,13 +1,14 @@
 // ref=, role=, label= and placeholder= in the DevTools tools. The ref table
 // lives in Arc's isolated world, so the Apple Event side resolves the selector
 // and stamps the element; the CDP side then selects the stamp. All fakes.
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { HANDLERS } from '../src/registry.js';
 import { deps } from '../src/cdp/run.js';
 import { isSemantic, stampSelector, stampTarget, TARGET_ATTRIBUTE } from '../src/cdp/stamp.js';
 import { ArcError } from '../src/jxa.js';
+import { activity } from '../src/user-activity.js';
 
 const envelope = (v) => ({ result: { value: { __arc: 1, ok: true, v } } });
 
@@ -16,7 +17,13 @@ function harness({ dialog = null, answer = () => undefined } = {}) {
   const sent = [];
   const stamps = [];
   const tab = {
-    capture: { dialog, dialogWaiter: () => ({ promise: new Promise(() => {}), dispose() {} }) },
+    capture: {
+      dialog,
+      dialogWaiter: () => ({ promise: new Promise(() => {}), dispose() {} }),
+      readConsole: () => ({ entries: [] }),
+      readNetwork: () => ({ entries: [] }),
+      startedAt: 0
+    },
     focusEmulation: true,
     session: {
       on: () => () => {},
@@ -172,5 +179,79 @@ describe('stampTarget (the Apple Event side)', () => {
     assert.deepEqual(await stampTarget('arc-1', { selector: 'role=button', nth: 3 }, { run }), { found: false, matches: 1 });
     const none = runWith({ matches: 0 });
     assert.deepEqual(await stampTarget('arc-1', { selector: 'role=button' }, { run: none.run }), { found: false, matches: 0 });
+  });
+});
+
+describe('read tools that attach a debugger resolve like changing tools', () => {
+  const original = { engine: deps.engine, resolveTab: deps.resolveTab, stamp: deps.stamp, focus: deps.focus };
+  afterEach(() => Object.assign(deps, original));
+
+  for (const name of ['screenshot', 'console_messages', 'network_requests']) {
+    it(`${name} with no tab_id never allows the user's active tab`, async () => {
+      harness({ answer: (method) => (method === 'Page.captureScreenshot' ? { data: Buffer.from('x').toString('base64') } : undefined) });
+      let seen;
+      deps.resolveTab = async (args) => {
+        seen = args;
+        return { tabId: 'arc-1', targetId: 'target-1' };
+      };
+      await HANDLERS[name]({});
+      assert.equal(seen.__allowActiveTab, false);
+    });
+  }
+
+  it('a plain read tool still may fall back to the active tab', async () => {
+    // Positive control: the flag is per tool, not a global switch.
+    const { TOOLS } = await import('../src/registry.js');
+    assert.ok(TOOLS.find((t) => t.name === 'get_page_content'));
+    assert.equal(TOOLS.find((t) => t.name === 'screenshot').ownTabOnly, undefined, 'the flag is not advertised to clients');
+  });
+});
+
+describe('screenshot with activate', () => {
+  const original = { engine: deps.engine, resolveTab: deps.resolveTab, stamp: deps.stamp, focus: deps.focus };
+  const realWait = activity.wait;
+  // The activity gate would read the real HID idle time: stub it to a quiet user.
+  beforeEach(() => { activity.wait = async () => ({ ok: true, waitedForUserMs: 0 }); });
+  afterEach(() => {
+    Object.assign(deps, original);
+    activity.wait = realWait;
+  });
+
+  const shot = (method) => (method === 'Page.captureScreenshot' ? { data: Buffer.from('x').toString('base64') } : undefined);
+
+  it('runs inside the focus protection and reports whether it worked', async () => {
+    const h = harness({ answer: shot });
+    const calls = [];
+    deps.focus = {
+      protectFocus: async (run) => {
+        calls.push('capture');
+        const value = await run();
+        calls.push('restore');
+        return { value, focusRestored: true, waitedForUserMs: 40 };
+      }
+    };
+    const out = await HANDLERS.screenshot({ activate: true });
+    assert.equal(out.ok, true);
+    assert.deepEqual(calls, ['capture', 'restore']);
+    assert.equal(out.focusRestored, true);
+    assert.equal(out.waitedForUserMs, 40);
+    assert.ok(h.sent.some((c) => c.method === 'Page.bringToFront'));
+  });
+
+  it('carries the reason when the focus could not be restored', async () => {
+    harness({ answer: shot });
+    deps.focus = { protectFocus: async (run) => ({ value: await run(), focusRestored: false, waitedForUserMs: 0, focusRestoreError: 'The user was busy.' }) };
+    const out = await HANDLERS.screenshot({ activate: true });
+    assert.equal(out.focusRestored, false);
+    assert.equal(out.focusRestoreError, 'The user was busy.');
+  });
+
+  it('without activate there is no focus protection at all, since nothing is brought forward', async () => {
+    const h = harness({ answer: shot });
+    deps.focus = { protectFocus: async () => { throw new Error('must not be used'); } };
+    const out = await HANDLERS.screenshot({});
+    assert.equal(out.ok, true);
+    assert.equal(out.focusRestored, undefined);
+    assert.ok(!h.sent.some((c) => c.method === 'Page.bringToFront'));
   });
 });

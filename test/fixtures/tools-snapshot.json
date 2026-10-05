@@ -1195,13 +1195,13 @@
   {
     "name": "screenshot",
     "title": "Screenshot",
-    "description": "Take a screenshot of a tab and return it as an image: the viewport, the whole page (full_page), or one element (selector). Needs the DevTools engine (see cdp_status). Works on a background tab without bringing it forward; pass activate true only if you want Arc to show it. A full page is capped at 16384 px tall and the result says when it was cut. Prefer jpeg with a quality for a long page, since a large PNG is a lot of tokens.",
+    "description": "Take a screenshot of a tab and return it as an image: the viewport, the whole page (full_page), or one element (selector). Needs the DevTools engine (see cdp_status). Works on a background tab without bringing it forward; pass activate true only if you want Arc to show it (that waits for the user to pause, like open_url, and restores their focus afterwards). A full page is capped at 16384 px tall and the result says when it was cut. Prefer jpeg with a quality for a long page, since a large PNG is a lot of tokens.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "tab_id": {
           "type": "string",
-          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+          "description": "Arc tab id from list_tabs. Omit to use the tab you opened last. Unlike other read tools this never falls back to the tab the user is looking at: with no id and no tab of yours it is refused, so pass this or call open_url first."
         },
         "selector": {
           "type": "string",
@@ -1240,7 +1240,7 @@
         },
         "activate": {
           "default": false,
-          "description": "Bring the tab to the front first. This changes what the user sees, so leave it off unless needed.",
+          "description": "Bring the tab to the front first. This changes what the user sees, so leave it off unless needed. It waits until the user has stopped typing, fails with userActive true if they never pause, and puts their window and application back in front afterwards (focusRestored says whether that worked).",
           "type": "boolean"
         },
         "timeout_ms": {
@@ -1601,7 +1601,7 @@
       "properties": {
         "tab_id": {
           "type": "string",
-          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+          "description": "Arc tab id from list_tabs. Omit to use the tab you opened last. Unlike other read tools this never falls back to the tab the user is looking at: with no id and no tab of yours it is refused, so pass this or call open_url first."
         },
         "level": {
           "default": "all",
@@ -1647,7 +1647,7 @@
       "properties": {
         "tab_id": {
           "type": "string",
-          "description": "Arc tab id from list_tabs. Omit to use this agent's current tab. A tool that changes a tab will not fall back to the tab the user is looking at, so pass this or call open_url first."
+          "description": "Arc tab id from list_tabs. Omit to use the tab you opened last. Unlike other read tools this never falls back to the tab the user is looking at: with no id and no tab of yours it is refused, so pass this or call open_url first."
         },
         "url_contains": {
           "type": "string",
