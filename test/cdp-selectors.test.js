@@ -255,3 +255,28 @@ describe('screenshot with activate', () => {
     assert.ok(!h.sent.some((c) => c.method === 'Page.bringToFront'));
   });
 });
+
+describe('trusted_type when the field never takes focus', () => {
+  const original = { engine: deps.engine, resolveTab: deps.resolveTab, stamp: deps.stamp };
+  afterEach(() => Object.assign(deps, original));
+
+  const focusAnswer = (focused) => (method, params) =>
+    method === 'Runtime.evaluate' && /isContentEditable/.test(params.expression)
+      ? envelope({ matches: 1, focused, target: { tag: 'input' } })
+      : undefined;
+
+  it('fails with ok false and sends no keystrokes', async () => {
+    const h = harness({ answer: focusAnswer(false) });
+    const out = await HANDLERS.trusted_type({ text: 'hello', selector: '#name' });
+    assert.equal(out.ok, false);
+    assert.match(out.error, /#name did not take focus.*nothing was typed/);
+    assert.ok(!h.sent.some((c) => c.method.startsWith('Input.')), 'no input event may reach another element');
+  });
+
+  it('types when the field did take focus', async () => {
+    const h = harness({ answer: focusAnswer(true) });
+    const out = await HANDLERS.trusted_type({ text: 'hello', selector: '#name' });
+    assert.equal(out.ok, true);
+    assert.ok(h.sent.some((c) => c.method === 'Input.insertText'));
+  });
+});

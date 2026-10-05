@@ -94,7 +94,7 @@ export const tools = [
     description:
       'Type into an input, textarea or contenteditable with real input events, so autocomplete dropdowns open and frameworks see genuine typing. Needs the DevTools engine. ' +
       'By default the text goes in as one insertText (fast, one trusted input event). per_key sends a real keydown, keypress, input and keyup for every character, which is what search-as-you-type boxes need. ' +
-      'With no selector it types into the element that already has focus. Refuses a disabled, readonly or non-text element. The result reports the field value afterwards (a password reports only its length).',
+      'With no selector it types into the element that already has focus. Refuses a disabled, readonly or non-text element, and a field that does not take focus (nothing is typed then, rather than typing into another element). The result reports the field value afterwards (a password reports only its length).',
     input: z.object({
       text: z.string().describe('Text to type'),
       selector: SELECTOR.describe('Field to focus first. CSS selector, "text=Label", or ref=, role=, label=, placeholder= as in click. Omit to type into the focused element.').optional(),

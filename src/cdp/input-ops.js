@@ -103,10 +103,12 @@ export async function trustedType(t, args) {
   const focus = await focusEditable(t, args);
   if (focus.error === 'no_match') return fail(`No element matches ${args.selector}`, { matches: focus.matches });
   if (focus.error) return fail(FOCUS_FAILURES[focus.error](focus, args.selector), {});
-  const result = { ok: true, typed: args.text.length, mode: args.per_key ? 'per_key' : 'insert_text', matches: focus.matches, target: focus.target };
   if (!focus.focused) {
-    result.warning = 'The element did not take focus, so the text went to whatever has it. Check the value below.';
+    // Typing now would put the text into whatever does have focus, possibly a
+    // different field, so nothing is sent.
+    return fail(`${args.selector} did not take focus (another element may have grabbed it back, or the page blocks programmatic focus), so nothing was typed. Click it with trusted_click, then call this with no selector.`, { matches: focus.matches, target: focus.target });
   }
+  const result = { ok: true, typed: args.text.length, mode: args.per_key ? 'per_key' : 'insert_text', matches: focus.matches, target: focus.target };
   await withDialog(result, async () => {
     if (args.per_key) {
       for (const char of args.text) {
