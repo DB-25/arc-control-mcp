@@ -5,6 +5,27 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Four read-only tools that read Arc's own data files instead of driving Arc,
+  for state Apple Events cannot report and in milliseconds:
+  - `sidebar_tree`: spaces with pinned items (folders nested), unpinned tabs and
+    top apps, each tab with title, url, last-active time and its `tab_id`.
+    `match_live` marks which tabs are open.
+  - `find_stale_tabs`: tabs idle for N days, oldest first, with space and
+    pinned / unpinned / top app, plus exact duplicate URLs.
+  - `search_archive`: search archived and closed tabs by text, newest first.
+  - `search_history`: search browsing history by text and time window. Opt-in:
+    it returns `ok: false` unless `ARC_MCP_ALLOW_HISTORY=1` is set.
+- `ARC_MCP_ARC_DATA_DIR` relocates the directory these tools read.
+- Every local data result reports `asOf` (the file's modification time) and a
+  note that Arc writes these files periodically. A missing file, invalid JSON, an
+  unknown format version or an unexpected history schema fails with `ok: false`.
+  History is read from a temporary copy that is deleted afterwards, through the
+  macOS `sqlite3`, with no new dependency. Nothing is ever written to Arc's files.
+
 ## [0.3.1] - 2026-10-05
 
 The 0.3.0 theme continued: three more ways a call could report success for

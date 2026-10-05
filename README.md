@@ -235,7 +235,7 @@ loses nothing but a few wasted calls.
 
 ## Tools
 
-26 tools in six modules.
+30 tools in seven modules.
 
 ### Tabs
 
@@ -301,6 +301,18 @@ page can do. `openWorldHint` is true for everything that touches page content,
 and false only for the tools that read or move Arc's own tab and space
 bookkeeping.
 
+### Local data
+
+Read Arc's own files instead of driving Arc: see [Reading Arc's local data](#reading-arcs-local-data).
+All four are read-only, never touch a page, and answer in milliseconds.
+
+| Tool | Purpose |
+|---|---|
+| `sidebar_tree` | Every space with pinned items (folders nested) and unpinned tabs, plus top apps. Each tab has `id` (the `tab_id` `list_tabs` reports), `title`, `url`, `lastActiveAt`. `space`, `max_items`, `include_urls`, and `match_live` to mark each tab open or not. |
+| `find_stale_tabs` | Tabs idle for `days` (default 7), oldest first, with space and `pinned` / `unpinned` / `topApp`. Also reports exact duplicate URLs across the sidebar. |
+| `search_archive` | Search archived and closed tabs by text, newest first. `reason` narrows to `auto` or `manual`, `since_days` to a window. |
+| `search_history` | Search browsing history by text and time window. **Off unless `ARC_MCP_ALLOW_HISTORY=1`.** |
+
 ### Selectors
 
 Every selector argument accepts either:
@@ -355,6 +367,58 @@ repeated only when it actually changes mid-batch.
 Tab ids are UUID strings and are not stable across a close and reopen, so call
 `list_tabs` rather than reusing an old one.
 
+## Reading Arc's local data
+
+Arc keeps its sidebar, archive and history in files under
+`~/Library/Application Support/Arc/`. Four tools read them directly. That gives
+you what Apple Events cannot report (pinned versus unpinned, folders, when a tab
+was last active, the archive) and does it in milliseconds rather than the
+seconds an Apple Events walk of every tab takes.
+
+| File | Used by |
+|---|---|
+| `StorableSidebar.json` | `sidebar_tree`, `find_stale_tabs` |
+| `StorableArchiveItems.json` | `search_archive` |
+| `User Data/Default/History` (Chromium SQLite) | `search_history` |
+
+What to know before relying on them:
+
+- **They lag.** Arc writes these files periodically, not on every change, so a
+  tab opened, closed or moved in the last minute or so may be missing or stale.
+  Every result carries `asOf`, the file's modification time, and a note saying so.
+  For the live truth use `list_tabs`.
+- **Ids line up.** A sidebar item's `id` is the `tab_id` that `list_tabs` reports,
+  so a result from `find_stale_tabs` can go straight to `close_tab`. `sidebar_tree`
+  with `match_live: true` checks each tab against the open ones.
+- **They fail loudly.** A missing file, invalid JSON, or a file format version this
+  server was not written for (sidebar and archive: version 1) returns `ok: false`
+  with the reason, never a guessed answer. A history database whose tables lack
+  the columns it reads fails the same way.
+- **They only read.** Nothing here writes to Arc's files. History, which Arc locks
+  while it runs, is read from a temporary copy that is deleted before the call
+  returns, using the `sqlite3` that ships with macOS at `/usr/bin/sqlite3`. No
+  dependency is added.
+- **Dates.** Arc stores seconds since 2001; results are ISO 8601 UTC.
+
+### Privacy
+
+These files are a complete record of what the user reads. Tab titles and URLs go
+into the model's context, and from there to wherever your client sends it.
+
+- `sidebar_tree` takes `include_urls: false` for a smaller, less revealing result.
+- `search_history` is **opt-in**. Without `ARC_MCP_ALLOW_HISTORY=1` in the
+  server's environment it returns `ok: false` and says how to enable it:
+
+  ```
+  claude mcp add arc --scope user -e ARC_MCP_ALLOW_HISTORY=1 -- npx -y arc-control-mcp@latest
+  ```
+
+  It only reads the `Default` profile unless you pass `profile` (a folder name
+  under `User Data`, such as `Profile 1`). Hidden pages (redirects, subframes) are
+  left out. Results are capped, `limit` defaults to 25 and tops out at 500.
+- Set `ARC_MCP_ARC_DATA_DIR` to point the tools at another directory, for example
+  a copy, or a fixture directory when testing.
+
 ## Environment variables
 
 | Variable | Default | Effect |
@@ -362,6 +426,8 @@ Tab ids are UUID strings and are not stable across a close and reopen, so call
 | `ARC_MCP_LABEL` | `default` | Names this agent's tab ownership. Two agents with different labels never see each other's owned tabs. |
 | `ARC_MCP_SPACE` | `Agent` | The Arc space new tabs open into, when a space with that name exists. |
 | `ARC_MCP_STATE_DIR` | `~/Library/Application Support/arc-control-mcp` | Where tab ownership is recorded, so a restarted agent can clean up the tabs its previous run left behind. |
+| `ARC_MCP_ARC_DATA_DIR` | `~/Library/Application Support/Arc` | Where the local data tools read Arc's files from. |
+| `ARC_MCP_ALLOW_HISTORY` | unset | Set to `1` to let `search_history` run. Any other value leaves it off. |
 
 ## Isolation, and why not a separate window
 
@@ -472,6 +538,8 @@ src/
   registry.js    composes tool modules, validates tool/handler parity at load
   jxa.js         osascript runner, Arc preamble, error mapping
   state.js       per-session tab ownership
+  arc-data.js    reads Arc's sidebar and archive files
+  arc-history.js reads Arc's history database from a temporary copy
   page-lib.js    helper library injected into the page as `A`
   tools/
     shared.js      common schemas and run helpers
@@ -481,6 +549,7 @@ src/
     interact.js    click, fill, select, keys, scroll, wait for selector
     spaces.js      Arc spaces
     scripting.js   raw JavaScript and batch
+    local.js       sidebar, stale tabs, archive and history from Arc's own files
 ```
 
 Adding a module means creating `tools/<name>.js` exporting `tools` and
