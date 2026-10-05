@@ -20,7 +20,12 @@ export const TAB_ID = z
 
 export const SELECTOR = z
   .string()
-  .describe('CSS selector, or "text=Some label" to match on visible text (case-insensitive substring, exact matches ranked first)');
+  .describe(
+    'CSS selector, or one of: "text=Some label" (visible text, case-insensitive substring, exact matches ranked first); ' +
+    '"ref=e12" (a ref from snapshot, re-resolved if the page re-rendered); ' +
+    '"role=button[name="Save"]" (ARIA or implicit role, name an exact match, or name~="sav" for a substring); ' +
+    '"label=Email" (the control a label names); "placeholder=Search"'
+  );
 
 export const VERBOSE = z
   .boolean()
@@ -30,12 +35,24 @@ export const VERBOSE = z
 export const EXACT = z
   .boolean()
   .default(false)
-  .describe('For a "text=" selector, require the whole visible text to match rather than a substring');
+  .describe('For "text=", "label=" and "placeholder=" selectors, require the whole text to match rather than a substring');
 
 export const NTH = z
   .number()
   .default(0)
   .describe('Which match to act on when several exist, 0-based');
+
+/** The longest a mutating action waits for the page to go quiet afterwards. */
+export const MAX_SETTLE_MS = 1500;
+
+export const SETTLE_MS = z
+  .number()
+  .min(0)
+  .max(MAX_SETTLE_MS)
+  .default(300)
+  .describe(
+    `After acting, wait until the page's DOM has been quiet for this many ms, then report settledMs. 0 skips the wait. The whole wait is capped at ${MAX_SETTLE_MS}ms; a page that never goes quiet reports settled false.`
+  );
 
 /** Every wait shares one ceiling, advertised so a client can see it up front. */
 export const timeoutMs = (defaultMs, note) =>
