@@ -19,6 +19,11 @@ The 0.3.0 rule still holds throughout: a call that did not do the thing says so.
 
 #### Agent window and activity gate
 
+- Window guard: before anything that creates or places a window, the server
+  records the frame of every one of the user's Arc windows, and afterwards
+  moves any that shifted back and reports `userWindowsMovedBack`. In the first
+  live run the user's own window jumped onto the agent window's display while
+  the agent window was being created.
 - A dedicated agent window. `open_url` opens new tabs in one separate Arc window
   instead of the user's own. `ARC_MCP_WINDOW=dedicated` is the default; `space`
   keeps the old behaviour.

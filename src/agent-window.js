@@ -323,7 +323,7 @@ export function createAgentWindowManager({
       failure = error;
     }
 
-    const restored = await guard.restore(snapshot);
+    const restored = await guard.restore(snapshot, { agentWindowId: window?.id ?? null });
     if (failure) {
       // A closed window and a minimized one look alike without Accessibility.
       if (window && !window.certain && !(failure instanceof UserActiveError)) {

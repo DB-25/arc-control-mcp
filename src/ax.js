@@ -139,6 +139,36 @@ return (frontmost as text) & "|" & fw`
       };
     },
 
+    /**
+     * Position, size and minimized flag of every Arc window, in one call. The
+     * guard compares these before and after anything that creates or places a
+     * window, because on 5 Oct 2026 the user's own window moved onto the
+     * agent window's display during the first window creation.
+     */
+    async frames() {
+      const out = await run(
+        withArc(
+          `set out to ""
+repeat with w in windows
+try
+set p to position of w
+set s to size of w
+set out to out & (value of attribute "AXIdentifier" of w) & "|" & (item 1 of p) & "," & (item 2 of p) & "," & (item 1 of s) & "," & (item 2 of s) & "|" & (value of attribute "AXMinimized" of w) & linefeed
+end try
+end repeat
+return out`
+        )
+      );
+      return out
+        .split('\n')
+        .map((line) => line.trim().split('|'))
+        .filter(([ident]) => ident && ident.startsWith(WINDOW_PREFIX))
+        .map(([ident, rect, minimized]) => {
+          const [x, y, width, height] = toNumbers(rect);
+          return { id: ident.slice(WINDOW_PREFIX.length), x, y, width, height, minimized: minimized === 'true' };
+        });
+    },
+
     /** Position, size and minimized flag of one window. */
     async state(id) {
       const out = await run(

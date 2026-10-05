@@ -40,7 +40,11 @@ function fakeWorld({ accessibility = true, screens = [MAIN, PORTRAIT], windows =
     accessibility,
     arcRunning,
     frontApp, // the application the user is in; Arc takes it when it launches or makes a window
-    state: { x: 100, y: 100, width: 1100, height: 800 }
+    state: { x: 100, y: 100, width: 1100, height: 800 },
+    // Frames of the user's own windows, as Accessibility reports them.
+    userFrames: { 'user-window': { x: 1280, y: 31, width: 1281, height: 1410, minimized: false } },
+    // Reproduces 5 Oct 2026: the user's window jumped to the agent window's spot.
+    moveUserOnCreate: false
   };
   const denied = () => {
     // System Events has no "Arc" process until Arc runs, which is not a permission problem.
@@ -63,6 +67,7 @@ function fakeWorld({ accessibility = true, screens = [MAIN, PORTRAIT], windows =
       const id = `agent-${world.created}`;
       world.windows.push({ id, visible: true, minimized: false, closed: false });
       world.events.push('create');
+      if (world.moveUserOnCreate) world.userFrames['user-window'] = { ...world.userFrames['user-window'], x: -1080, y: 157 };
       world.focusedId = id; // Arc raises what it makes
       world.frontApp = ARC_APP; // and comes to the front to do it
       return id;
@@ -92,8 +97,17 @@ function fakeWorld({ accessibility = true, screens = [MAIN, PORTRAIT], windows =
       world.events.push(`raise:${id}`);
       world.focusedId = id;
     },
+    frames: async () => {
+      denied();
+      return Object.entries(world.userFrames).map(([id, f]) => ({ id, ...f }));
+    },
     place: async (id, rect) => {
       denied();
+      if (world.userFrames[id]) {
+        world.events.push(`moveback:${id}`);
+        world.userFrames[id] = { ...world.userFrames[id], x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+        return;
+      }
       world.events.push('place');
       world.placed = { id, rect };
     },
@@ -669,5 +683,27 @@ describe('the JXA that drives Arc', () => {
   it('the preamble keeps the agent window out of the user\'s windows but not out of tab lookups', () => {
     assert.match(PREAMBLE, /visible\(\) && idOf\(w\) !== P\.agent_window_id/);
     assert.match(PREAMBLE, /function tabWindows/);
+  });
+});
+
+describe("the user's own windows stay put", () => {
+  it('moves a user window back when creating the agent window displaced it', async () => {
+    const world = fakeWorld();
+    world.moveUserOnCreate = true;
+    const result = await manager(world, freshDir()).withWindow(noop);
+    assert.deepEqual(
+      { x: world.userFrames['user-window'].x, y: world.userFrames['user-window'].y },
+      { x: 1280, y: 31 },
+      'the user window is back where it was'
+    );
+    assert.equal(result.userWindowsMovedBack, 1);
+    assert.ok(world.events.includes('moveback:user-window'));
+  });
+
+  it('leaves user windows alone when nothing moved them', async () => {
+    const world = fakeWorld();
+    const result = await manager(world, freshDir()).withWindow(noop);
+    assert.equal(result.userWindowsMovedBack, undefined);
+    assert.ok(!world.events.some((e) => e.startsWith('moveback:')));
   });
 });

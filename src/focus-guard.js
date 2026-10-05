@@ -10,6 +10,11 @@ import { AxPermissionError, isArcApp, sameApp } from './ax.js';
  * read), `permissionLost(error)` (remember a refusal, ignore a transient
  * failure, rethrow anything else) and the user-activity `gate`.
  */
+// AX geometry rounds, so a couple of points either way is the same frame.
+const FRAME_TOLERANCE = 2;
+const frameMoved = (a, b) =>
+  ['x', 'y', 'width', 'height'].some((k) => Math.abs((a[k] ?? 0) - (b[k] ?? 0)) > FRAME_TOLERANCE);
+
 export function createFocusGuard({ ax, gate, accessibility, permissionLost }) {
   /**
    * The application in front, and which Arc window holds focus. Both are
@@ -27,6 +32,7 @@ export function createFocusGuard({ ax, gate, accessibility, permissionLost }) {
     if (await accessibility()) {
       try {
         snapshot.window = await ax.focus();
+        snapshot.frames = await ax.frames();
       } catch (error) {
         permissionLost(error);
       }
@@ -40,8 +46,8 @@ export function createFocusGuard({ ax, gate, accessibility, permissionLost }) {
    * displaced and all of it was put back, with the front application read
    * again to confirm; anything else that goes wrong is in `error`.
    */
-  async function restore(snapshot) {
-    const out = { restored: false, waited: 0 };
+  async function restore(snapshot, { agentWindowId = null } = {}) {
+    const out = { restored: false, waited: 0, windowsMovedBack: 0 };
     const errors = [];
     // Restored means everything that was displaced is back, not just some of it.
     let displaced = 0;
@@ -63,6 +69,27 @@ export function createFocusGuard({ ax, gate, accessibility, permissionLost }) {
             await ax.raise(snapshot.window.focusedId);
             fixed++;
           }
+        }
+      } catch (error) {
+        if (error instanceof AxPermissionError) permissionLost(error);
+        else errors.push(error.message);
+      }
+    }
+
+    // Any of the user's windows that moved or resized goes back where it was.
+    // Only windows that existed before count, and never the agent window,
+    // which is the one placement is meant to move.
+    if (snapshot.frames?.length) {
+      try {
+        const now = new Map((await ax.frames()).map((f) => [f.id, f]));
+        for (const was of snapshot.frames) {
+          const cur = now.get(was.id);
+          if (!cur || was.id === agentWindowId || was.minimized || cur.minimized) continue;
+          if (!frameMoved(was, cur)) continue;
+          displaced++;
+          await ax.place(was.id, was);
+          fixed++;
+          out.windowsMovedBack++;
         }
       } catch (error) {
         if (error instanceof AxPermissionError) permissionLost(error);
@@ -98,6 +125,7 @@ export function createFocusGuard({ ax, gate, accessibility, permissionLost }) {
   const fields = (restored, waitedForUserMs) => ({
     waitedForUserMs: waitedForUserMs + restored.waited,
     focusRestored: restored.restored,
+    ...(restored.windowsMovedBack ? { userWindowsMovedBack: restored.windowsMovedBack } : {}),
     ...(restored.error ? { focusRestoreError: restored.error } : {})
   });
 
