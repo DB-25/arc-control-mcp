@@ -76,6 +76,12 @@ async function withTab(url, body, { wait = true } = {}) {
 const dataset = async (tabId) =>
   JSON.parse((await tool.execute_javascript({ tab_id: tabId, code: 'JSON.stringify(document.body.dataset)' })).result);
 
+// Removed once, after every describe below has run: the loading tests read the
+// same fixture directory.
+after(() => {
+  if (!REASON) rmSync(fixtureDir, { recursive: true, force: true });
+});
+
 describe('integration: interaction tools', () => {
   before(() => {
     if (REASON) return;
@@ -87,7 +93,6 @@ describe('integration: interaction tools', () => {
   after(async () => {
     if (REASON) return;
     await tool.close_own_tabs({});
-    rmSync(fixtureDir, { recursive: true, force: true });
   });
 
   it('wait_for_text sees text appear, and a spinner label disappear', { skip }, async () => {
