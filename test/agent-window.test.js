@@ -12,8 +12,8 @@ import { join } from 'node:path';
 import { createAgentWindowManager, LIST_SCRIPT, CREATE_SCRIPT } from '../src/agent-window.js';
 import { PREAMBLE } from '../src/jxa.js';
 import { OPEN_TAB_SCRIPT } from '../src/tools/open-dedicated.js';
-import { AxPermissionError, ACCESSIBILITY_NOTE } from '../src/ax.js';
-import { UserActiveError } from '../src/user-activity.js';
+import { AxPermissionError, AxError, ACCESSIBILITY_NOTE } from '../src/ax.js';
+import { UserActiveError, userActiveResult } from '../src/user-activity.js';
 
 const temps = [];
 const freshDir = () => {
@@ -27,23 +27,34 @@ const tick = (ms = 15) => new Promise((resolve) => setTimeout(resolve, ms));
 const MAIN = { frame: { x: 0, y: 0, width: 2560, height: 1440 }, visibleFrame: { x: 0, y: 0, width: 2560, height: 1415 } };
 const PORTRAIT = { frame: { x: -1080, y: -382, width: 1080, height: 1920 }, visibleFrame: { x: -1080, y: -382, width: 1080, height: 1895 } };
 const idle = async () => ({ ok: true, waitedForUserMs: 0 });
+const ARC_APP = { name: 'Arc', bundleId: 'company.thebrowser.Browser' };
+const TERMINAL = { name: 'Terminal', bundleId: 'com.apple.Terminal' };
 
 /** One Arc, shared by every manager that stands for a process. */
-function fakeWorld({ accessibility = true, screens = [MAIN, PORTRAIT], windows = [] } = {}) {
+function fakeWorld({ accessibility = true, screens = [MAIN, PORTRAIT], windows = [], arcRunning = true, frontApp = ARC_APP } = {}) {
   const world = {
     windows, // { id, visible, minimized, closed }
     events: [],
     created: 0,
     focusedId: 'user-window',
     accessibility,
+    arcRunning,
+    frontApp, // the application the user is in; Arc takes it when it launches or makes a window
     state: { x: 100, y: 100, width: 1100, height: 800 }
   };
   const denied = () => {
+    // System Events has no "Arc" process until Arc runs, which is not a permission problem.
+    if (!world.arcRunning) throw new AxError('System Events got an error: Can\u2019t get process "Arc". (-1728)');
     if (!world.accessibility) throw new AxPermissionError(ACCESSIBILITY_NOTE);
   };
   world.arc = {
     list: async (options) => {
       world.events.push(options?.launch === false ? 'list-nolaunch' : 'list');
+      if (options?.launch !== false && !world.arcRunning) {
+        world.arcRunning = true; // the real script launches Arc, which comes to the front
+        world.frontApp = ARC_APP;
+        world.events.push('launch');
+      }
       return world.windows.map((w) => ({ id: w.id, visible: w.visible && !w.minimized && !w.closed }));
     },
     create: async () => {
@@ -53,6 +64,7 @@ function fakeWorld({ accessibility = true, screens = [MAIN, PORTRAIT], windows =
       world.windows.push({ id, visible: true, minimized: false, closed: false });
       world.events.push('create');
       world.focusedId = id; // Arc raises what it makes
+      world.frontApp = ARC_APP; // and comes to the front to do it
       return id;
     }
   };
@@ -63,7 +75,12 @@ function fakeWorld({ accessibility = true, screens = [MAIN, PORTRAIT], windows =
     },
     focus: async () => {
       denied();
-      return { frontmost: true, focusedId: world.focusedId };
+      return { frontmost: world.frontApp === ARC_APP, focusedId: world.focusedId };
+    },
+    frontApp: async () => world.frontApp,
+    activateApp: async (app) => {
+      world.events.push(`activate:${app.name}`);
+      if (!world.activationIgnored) world.frontApp = app;
     },
     state: async (id) => {
       denied();
@@ -307,6 +324,244 @@ describe('focus protection', () => {
       /boom/
     );
     assert.equal(world.focusedId, 'user-window');
+  });
+});
+
+describe('cold start: Arc is not running', () => {
+  it('launches Arc and makes the window instead of failing on System Events having no Arc process', async () => {
+    const world = fakeWorld({ arcRunning: false, frontApp: TERMINAL });
+    const result = await manager(world, freshDir()).withWindow(noop);
+    assert.equal(result.window.created, true);
+    assert.equal(world.created, 1);
+    assert.ok(world.events.includes('launch'));
+  });
+
+  it('does not cache the miss: Accessibility is used as soon as Arc is up', async () => {
+    const world = fakeWorld({ arcRunning: false });
+    const mgr = manager(world, freshDir());
+    assert.equal(await mgr.accessibility(), false);
+    world.arcRunning = true;
+    assert.equal(await mgr.accessibility(), true, 'asked again, with no recheck interval to wait out');
+  });
+
+  it('says nothing about a missing grant, since none was refused', async () => {
+    const world = fakeWorld({ arcRunning: false });
+    const result = await manager(world, freshDir()).withWindow(noop);
+    assert.equal(result.accessibilityNote, undefined);
+  });
+
+  it('a permission refusal is still cached and reported', async () => {
+    const world = fakeWorld({ accessibility: false });
+    const mgr = manager(world, freshDir());
+    const first = await mgr.withWindow(noop);
+    assert.match(first.accessibilityNote, /Accessibility/);
+  });
+
+  it('arc_status does not throw, and does not blame a permission, while Arc is not running', async () => {
+    const world = fakeWorld({ arcRunning: false });
+    const mgr = manager(world, freshDir());
+    const status = await mgr.status();
+    assert.equal(status.accessibility.available, false);
+    assert.equal(status.accessibility.unknown, true);
+    assert.doesNotMatch(status.accessibility.note, /Privacy & Security/);
+    assert.equal(world.arcRunning, false, 'looking must not launch Arc');
+  });
+
+  it('puts the application the user was in back in front after the launch took it', async () => {
+    const world = fakeWorld({ arcRunning: false, frontApp: TERMINAL });
+    const result = await manager(world, freshDir()).withWindow(noop);
+    assert.equal(result.focusRestored, true);
+    assert.deepEqual(world.frontApp, TERMINAL);
+    assert.ok(world.events.includes('activate:Terminal'));
+  });
+});
+
+describe('restoring the user\'s application, not just their Arc window', () => {
+  it('reactivates the previous app when making the window took the front, and reports it', async () => {
+    const world = fakeWorld({ frontApp: TERMINAL });
+    const result = await manager(world, freshDir()).withWindow(noop);
+    assert.equal(result.focusRestored, true);
+    assert.deepEqual(world.frontApp, TERMINAL);
+    assert.equal(result.focusRestoreError, undefined);
+  });
+
+  it('does nothing when the user was in Arc already', async () => {
+    const world = fakeWorld({ frontApp: ARC_APP });
+    const result = await manager(world, freshDir()).withWindow(noop);
+    assert.ok(!world.events.some((e) => e.startsWith('activate')));
+    assert.equal(result.focusRestored, true, 'their Arc window was still put back');
+  });
+
+  it('does nothing and reports false when Arc never came to the front', async () => {
+    const world = fakeWorld({ frontApp: TERMINAL });
+    const mgr = manager(world, freshDir());
+    await mgr.withWindow(noop);
+    world.events.length = 0;
+    world.focusedId = 'user-window';
+    world.frontApp = TERMINAL;
+    const result = await mgr.withWindow(noop);
+    assert.equal(result.focusRestored, false);
+    assert.ok(!world.events.some((e) => e.startsWith('activate') || e.startsWith('raise')));
+  });
+
+  it('a tab made in the existing window that activates Arc is undone too', async () => {
+    const world = fakeWorld({ frontApp: TERMINAL });
+    const mgr = manager(world, freshDir());
+    await mgr.withWindow(noop);
+    world.events.length = 0;
+    world.frontApp = TERMINAL;
+    const result = await mgr.withWindow(async () => {
+      world.frontApp = ARC_APP;
+    });
+    assert.equal(result.focusRestored, true);
+    assert.deepEqual(world.frontApp, TERMINAL);
+  });
+
+  it('says so instead of claiming success when the activation did not stick', async () => {
+    const world = fakeWorld({ frontApp: TERMINAL });
+    world.activationIgnored = true;
+    const result = await manager(world, freshDir()).withWindow(noop);
+    assert.equal(result.focusRestored, false);
+    assert.match(result.focusRestoreError, /Terminal.*not frontmost/);
+  });
+
+  it('is left alone when the caller asked to bring Arc forward', async () => {
+    const world = fakeWorld({ frontApp: TERMINAL });
+    const result = await manager(world, freshDir()).withWindow(noop, { restoreFocus: false });
+    assert.equal(result.focusRestored, false);
+    assert.deepEqual(world.frontApp, ARC_APP);
+    assert.ok(!world.events.some((e) => e.startsWith('activate')));
+  });
+
+  it('is skipped with an error when the user got busy, rather than stealing the front back mid-keystroke', async () => {
+    const world = fakeWorld({ frontApp: TERMINAL });
+    let worked = false;
+    const gate = async () => (worked ? { ok: false, userActive: true, waitedForUserMs: 15000 } : { ok: true, waitedForUserMs: 0 });
+    const result = await manager(world, freshDir(), { gate }).withWindow(async () => {
+      worked = true;
+    });
+    assert.equal(result.focusRestored, false);
+    assert.match(result.focusRestoreError, /busy/);
+    assert.deepEqual(world.frontApp, ARC_APP);
+  });
+
+  it('a failing frontApp read never fails the work', async () => {
+    const world = fakeWorld({ frontApp: TERMINAL });
+    world.ax.frontApp = async () => { throw new AxError('boom'); };
+    const result = await manager(world, freshDir()).withWindow(noop);
+    assert.equal(result.window.created, true);
+    assert.equal(result.focusRestored, true, 'the Arc window was still restored');
+  });
+
+  it('protectFocus restores around work that does not need the agent window', async () => {
+    const world = fakeWorld({ frontApp: TERMINAL });
+    const mgr = manager(world, freshDir());
+    const done = await mgr.protectFocus(async () => {
+      world.frontApp = ARC_APP;
+      return 'shot';
+    });
+    assert.equal(done.value, 'shot');
+    assert.equal(done.focusRestored, true);
+    assert.deepEqual(world.frontApp, TERMINAL);
+    assert.equal(world.created, 0, 'no window is made for it');
+  });
+
+  it('protectFocus restores even when the work fails, then rethrows', async () => {
+    const world = fakeWorld({ frontApp: TERMINAL });
+    await assert.rejects(
+      manager(world, freshDir()).protectFocus(async () => {
+        world.frontApp = ARC_APP;
+        throw new Error('capture failed');
+      }),
+      /capture failed/
+    );
+    assert.deepEqual(world.frontApp, TERMINAL);
+  });
+});
+
+describe('the user becoming active after the window was already created', () => {
+  /** Quiet for the first `quiet` checks, busy afterwards. */
+  const busyAfter = (quiet) => {
+    let calls = 0;
+    return async () => (++calls <= quiet ? { ok: true, waitedForUserMs: 0 } : { ok: false, userActive: true, waitedForUserMs: 15000, idleMs: 30 });
+  };
+
+  it('reports the created window and does not claim nothing was touched', async () => {
+    const world = fakeWorld();
+    // Gates: start, before the lock, then the one before placement fails.
+    const mgr = manager(world, freshDir(), { gate: busyAfter(2) });
+    const error = await mgr.withWindow(noop).catch((e) => e);
+    assert.ok(error instanceof UserActiveError);
+    assert.equal(world.created, 1);
+    assert.deepEqual(error.agentWindow, { created: true, id: 'agent-1' });
+    assert.doesNotMatch(error.message, /nothing was opened/);
+    assert.match(error.message, /agent-1/);
+    const result = userActiveResult(error.gate, error.agentWindow);
+    assert.deepEqual(result.agentWindow, { created: true, id: 'agent-1' });
+    assert.equal(result.userActive, true);
+    assert.match(result.error, /already been created/);
+  });
+
+  it('the next call reuses and places that window instead of making another', async () => {
+    const world = fakeWorld();
+    const dir = freshDir();
+    await manager(world, dir, { gate: busyAfter(2) }).withWindow(noop).catch(() => {});
+    const result = await manager(world, dir).withWindow(noop);
+    assert.equal(world.created, 1);
+    assert.equal(result.window.created, false);
+    assert.equal(result.window.placement, 'second-display');
+  });
+
+  it('a user who is busy before anything exists still gets the plain message and no agentWindow', async () => {
+    const world = fakeWorld();
+    const error = await manager(world, freshDir(), { gate: busyAfter(0) }).withWindow(noop).catch((e) => e);
+    assert.ok(error instanceof UserActiveError);
+    assert.equal(error.agentWindow, null);
+    assert.match(error.message, /nothing was opened/);
+    assert.equal(userActiveResult(error.gate, error.agentWindow).agentWindow, undefined);
+    assert.equal(world.created, 0);
+  });
+
+  it('a busy user after an existing window was merely adopted is not reported as a creation', async () => {
+    const world = fakeWorld();
+    const dir = freshDir();
+    await manager(world, dir).withWindow(noop);
+    // Start gate passes, the one after ensure fails.
+    const error = await manager(world, dir, { gate: busyAfter(1) }).withWindow(noop).catch((e) => e);
+    assert.ok(error instanceof UserActiveError);
+    assert.equal(error.agentWindow, null);
+  });
+});
+
+describe('waiting for the user happens outside the lock', () => {
+  it('never consults the activity gate while the lock file exists', async () => {
+    const world = fakeWorld();
+    const dir = freshDir();
+    const seen = [];
+    const gate = async () => {
+      seen.push(existsSync(join(dir, 'agent-window.lock')));
+      return { ok: true, waitedForUserMs: 0 };
+    };
+    await manager(world, dir, { gate }).withWindow(noop);
+    assert.ok(seen.length >= 3);
+    assert.ok(seen.every((held) => held === false), `gate ran under the lock: ${seen}`);
+  });
+
+  it('waits for idle before taking the lock', async () => {
+    const world = fakeWorld();
+    const dir = freshDir();
+    const order = [];
+    const gate = async () => {
+      order.push('gate');
+      return { ok: true, waitedForUserMs: 0 };
+    };
+    const real = world.arc.create;
+    world.arc.create = async (...args) => {
+      order.push(existsSync(join(dir, 'agent-window.lock')) ? 'create-under-lock' : 'create-unlocked');
+      return real(...args);
+    };
+    await manager(world, dir, { gate }).withWindow(noop);
+    assert.ok(order.indexOf('gate') < order.indexOf('create-under-lock'));
   });
 });
 

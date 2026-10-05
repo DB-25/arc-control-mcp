@@ -59,6 +59,22 @@ const windowOf = (id) =>
 
 const withArc = (body) => `tell application "System Events" to tell process "Arc"\n${body}\nend tell`;
 
+// Arc's bundle id: the app's own name can be localised or renamed, this cannot.
+export const ARC_BUNDLE_ID = 'company.thebrowser.Browser';
+const BUNDLE_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+/** Whether an app record from frontApp() is Arc. */
+export const isArcApp = (app) => Boolean(app) && (app.bundleId === ARC_BUNDLE_ID || app.name === 'Arc');
+
+/** Whether two app records name the same application. */
+export const sameApp = (a, b) => Boolean(a && b) && (a.bundleId && b.bundleId ? a.bundleId === b.bundleId : a.name === b.name);
+
+// Goes into AppleScript source inside quotes, so nothing may end the string.
+function quoted(text) {
+  if (/[\u0000-\u001f]/.test(text)) throw new AxError(`Not an application name: ${JSON.stringify(text)}`);
+  return `"${text.replace(/[\\"]/g, '\\$&')}"`;
+}
+
 const toNumbers = (text) => text.split(',').map((part) => Number(part.trim()));
 
 /**
@@ -79,6 +95,29 @@ export function createAxDriver(run = defaultRun) {
         .map((part) => part.trim())
         .filter((part) => part.startsWith(WINDOW_PREFIX))
         .map((part) => part.slice(WINDOW_PREFIX.length));
+    },
+
+    /**
+     * The application the user is in, by name and bundle id. Works whether or
+     * not Arc is running, which is what a cold start needs.
+     */
+    async frontApp() {
+      const out = await run(
+        `tell application "System Events"
+set p to first application process whose frontmost is true
+return (name of p) & "|" & (bundle identifier of p)
+end tell`
+      );
+      const cut = out.lastIndexOf('|');
+      if (cut < 0 || !out.slice(0, cut).trim()) throw new AxError(`Unreadable frontmost application: ${out}`);
+      const bundleId = out.slice(cut + 1).trim();
+      return { name: out.slice(0, cut).trim(), bundleId: BUNDLE_ID_PATTERN.test(bundleId) ? bundleId : null };
+    },
+
+    /** Bring an application forward again, as clicking it in the Dock would. */
+    async activateApp(app) {
+      const match = app.bundleId && BUNDLE_ID_PATTERN.test(app.bundleId) ? `bundle identifier is ${quoted(app.bundleId)}` : `name is ${quoted(app.name)}`;
+      await run(`tell application "System Events" to set frontmost of (first application process whose ${match}) to true`);
     },
 
     /** Whether Arc is frontmost and the id of the window holding focus. Never a title. */

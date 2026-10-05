@@ -2,7 +2,8 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
 import { runJxa, ArcError, bindAgentWindowId } from './jxa.js';
-import { createAxDriver, readScreens, AxPermissionError, ACCESSIBILITY_NOTE } from './ax.js';
+import { createAxDriver, readScreens, AxPermissionError, AxError, ACCESSIBILITY_NOTE } from './ax.js';
+import { createFocusGuard } from './focus-guard.js';
 import { planPlacement, displayOfWindow } from './placement.js';
 import { windowConfig } from './window-config.js';
 import { activity, UserActiveError } from './user-activity.js';
@@ -105,24 +106,41 @@ export function createAgentWindowManager({
   let queue = Promise.resolve();
   let axCache = { available: null, at: 0 };
   let noted = false;
+  let axUnreadable = null;
 
-  /** Whether Accessibility works right now, cached. */
+  /**
+   * Whether Accessibility works right now. A grant or a refusal is cached; any
+   * other failure is not. With Arc not running System Events has no "Arc"
+   * process to ask, which is a cold start and not a missing permission: it
+   * answers "unavailable for now" and is asked again next time, so the window
+   * still gets created and Arc launched.
+   */
   async function accessibility() {
     if (axCache.available === true) return true;
     if (axCache.available === false && now() - axCache.at < AX_RECHECK_MS) return false;
     try {
       await ax.windowIds();
       axCache = { available: true, at: now() };
+      axUnreadable = null;
     } catch (error) {
-      if (!(error instanceof AxPermissionError)) throw error;
+      if (!(error instanceof AxPermissionError)) {
+        if (!(error instanceof AxError)) throw error;
+        axUnreadable = error.message;
+        return false;
+      }
       axCache = { available: false, at: now(), message: error.message };
     }
     return axCache.available;
   }
 
+  // A permission failure is remembered. Any other Accessibility failure (Arc
+  // quit meanwhile, a window that just closed) only means this step is skipped.
   const permissionLost = (error) => {
-    if (!(error instanceof AxPermissionError)) throw error;
-    axCache = { available: false, at: now(), message: error.message };
+    if (error instanceof AxPermissionError) {
+      axCache = { available: false, at: now(), message: error.message };
+      return;
+    }
+    if (!(error instanceof AxError)) throw error;
   };
 
   // Said once per server run. Repeating it on every open_url would bury results.
@@ -146,8 +164,12 @@ export function createAgentWindowManager({
     if (await accessibility()) {
       // Accessibility lists a minimized window and drops a closed one, which
       // Arc's own `visible` cannot do.
-      const ids = await ax.windowIds();
-      return { stored, exists: ids.includes(stored.windowId) || Boolean(row && row.visible), certain: true, arcRows: rows };
+      try {
+        const ids = await ax.windowIds();
+        return { stored, exists: ids.includes(stored.windowId) || Boolean(row && row.visible), certain: true, arcRows: rows };
+      } catch (error) {
+        permissionLost(error);
+      }
     }
     // Guessing "gone" would create a second window, whereas a phantom merely
     // fails honestly on use.
@@ -168,26 +190,31 @@ export function createAgentWindowManager({
     }
   }
 
-  async function adoptOrCreate(found, gated) {
-    if (found.exists) {
-      let { stored } = found;
-      let placementNote;
-      // Placement that could not be applied earlier, because Accessibility was
-      // missing, is applied once it is available. A placed window is never
-      // moved again: the user may have put it somewhere on purpose.
-      if (!stored.placed && (config.placement === 'none' || (await accessibility()))) {
-        await gated();
-        const result = await place(stored.windowId, config.placement);
-        if (result.placed) {
-          stored = { ...stored, placed: true, placement: result.applied };
-          writeStore(dir, file, stored);
-        }
-        placementNote = result.note;
+  /** An existing window, with any placement that is still owed applied. */
+  async function adopt(found, gated) {
+    let { stored } = found;
+    let placementNote;
+    // Placement that could not be applied earlier, because Accessibility was
+    // missing, is applied once it is available. A placed window is never
+    // moved again: the user may have put it somewhere on purpose.
+    if (!stored.placed && (config.placement === 'none' || (await accessibility()))) {
+      await gated();
+      const result = await place(stored.windowId, config.placement);
+      if (result.placed) {
+        stored = { ...stored, placed: true, placement: result.applied };
+        writeStore(dir, file, stored);
       }
-      return { id: stored.windowId, created: false, certain: found.certain, placement: stored.placement ?? null, placementNote };
+      placementNote = result.note;
     }
+    return { id: stored.windowId, created: false, certain: found.certain, placement: stored.placement ?? null, placementNote };
+  }
 
-    await gated();
+  /**
+   * Make the one window and record it. No waiting for the user in here: this
+   * runs under the lock, and a wait of seconds would hold every other session
+   * up behind it.
+   */
+  async function create(found) {
     const before = (found.arcRows || (await arc.list())).map((r) => r.id);
     const id = await arc.create(before);
     if (!id) {
@@ -195,15 +222,24 @@ export function createAgentWindowManager({
     }
     // Recorded before it is placed, so a failure past this point can never
     // leave a window nobody remembers, which the next call would then duplicate.
-    let record = { windowId: id, createdAt: new Date(now()).toISOString(), createdBy: labelOf(), requested: config.placement, placed: false };
+    const record = { windowId: id, createdAt: new Date(now()).toISOString(), createdBy: labelOf(), requested: config.placement, placed: false };
     writeStore(dir, file, record);
-    await gated();
-    const result = await place(id, config.placement);
-    if (result.placed) {
-      record = { ...record, placed: true, placement: result.applied };
-      writeStore(dir, file, record);
+    return record;
+  }
+
+  /** Place a window this call just created, after the lock is gone and the user has paused. */
+  async function placeCreated(record, gated) {
+    try {
+      await gated();
+    } catch (error) {
+      // The window exists and stays recorded as unplaced, so the next call
+      // places it. Say so, rather than let the failure claim nothing happened.
+      if (error instanceof UserActiveError) throw new UserActiveError(error.gate, { created: true, id: record.windowId });
+      throw error;
     }
-    return { id, created: true, certain: true, placement: result.applied, placementNote: result.note };
+    const result = await place(record.windowId, config.placement);
+    if (result.placed) writeStore(dir, file, { ...record, placed: true, placement: result.applied });
+    return { id: record.windowId, created: true, certain: true, placement: result.applied, placementNote: result.note };
   }
 
   /** Find the agent window, creating it only when it is truly gone. */
@@ -211,11 +247,18 @@ export function createAgentWindowManager({
     const run = async () => {
       // Fast path without the lock: the common call finds the window already there.
       const quick = await locate();
-      if (quick.exists) return adoptOrCreate(quick, gated);
+      if (quick.exists) return adopt(quick, gated);
+      // Idle first, lock second: the wait for the user can last seconds, and
+      // the lock is only for deciding and creating.
+      await gated();
       mkdirSync(dir, { recursive: true });
       // Looked at again under the lock: another session may have created the
       // window while this one waited.
-      return state.withLockAsync(lockFile, async () => adoptOrCreate(await locate(), gated));
+      const outcome = await state.withLockAsync(lockFile, async () => {
+        const found = await locate();
+        return found.exists ? { found } : { created: await create(found) };
+      });
+      return outcome.found ? adopt(outcome.found, gated) : placeCreated(outcome.created, gated);
     };
     // One at a time per process, so two tool calls in a batch cannot both
     // decide the window is missing before either has recorded one.
@@ -237,12 +280,16 @@ export function createAgentWindowManager({
     }
   }
 
+  const guard = createFocusGuard({ ax, gate, accessibility, permissionLost });
+
   /**
    * Run `run({ id })` with the agent window found or created. Arc raises a
    * window when a tab or window is created in it, and with Arc frontmost that
-   * takes keyboard focus from the window the user is typing in, so the focused
-   * window is captured first and put back afterwards. Without Accessibility
-   * there is nothing to compare: no placement, no restore, and a one-time note.
+   * takes keyboard focus from the window the user is typing in; launching or
+   * activating Arc takes the front from whatever application they were using.
+   * Both are captured first and put back afterwards. Without Accessibility
+   * there is no window to compare, but the application is still restored, and
+   * placement is skipped with a one-time note.
    * Throws UserActiveError when the user never paused.
    */
   async function withWindow(run, { restoreFocus = true } = {}) {
@@ -256,28 +303,27 @@ export function createAgentWindowManager({
     // Before the focus is captured, so what is captured is what the user chose
     // after they stopped typing.
     await gated();
-    let before = null;
-    if (restoreFocus && (await accessibility())) {
-      try {
-        before = await ax.focus();
-      } catch (error) {
-        permissionLost(error);
-      }
-    }
+    const snapshot = restoreFocus ? await guard.capture() : { app: null, window: null };
 
     let value;
     let window;
     let failure = null;
     try {
       window = await ensure(gated);
-      await gated();
+      try {
+        await gated();
+      } catch (error) {
+        // The window may have been made by this very call.
+        if (error instanceof UserActiveError && window.created) throw new UserActiveError(error.gate, { created: true, id: window.id });
+        throw error;
+      }
       value = await run(window);
       if (window.placement === 'minimized') await keepMinimized(window.id);
     } catch (error) {
       failure = error;
     }
 
-    const restored = await restoreFocusTo(before, gated);
+    const restored = await guard.restore(snapshot);
     if (failure) {
       // A closed window and a minimized one look alike without Accessibility.
       if (window && !window.certain && !(failure instanceof UserActiveError)) {
@@ -289,34 +335,28 @@ export function createAgentWindowManager({
     return {
       value,
       window,
-      waitedForUserMs: waited + restored.waited,
-      focusRestored: restored.restored,
-      ...(restored.error ? { focusRestoreError: restored.error } : {}),
+      ...guard.fields(restored, waited),
       ...(note ? { accessibilityNote: note } : {})
     };
   }
 
-  /** Put the user's window back in front if it was displaced. Never throws. */
-  async function restoreFocusTo(before, gated) {
-    const out = { restored: false, waited: 0 };
-    if (!before || !before.focusedId) return out;
+  /**
+   * The same protection for work on a tab that already exists but can bring
+   * Arc forward, such as a screenshot that activates its tab. No window is
+   * found or created. The caller has already waited for the user to pause.
+   */
+  async function protectFocus(run) {
+    const snapshot = await guard.capture();
+    let value;
+    let failure = null;
     try {
-      const after = await ax.focus();
-      if (after.focusedId === before.focusedId) return out;
-      // The restore raises a window, so it too waits for a pause in typing.
-      const result = await gate();
-      out.waited = result.waitedForUserMs || 0;
-      if (!result.ok) {
-        out.error = 'The user was busy, so their window was not put back in front.';
-        return out;
-      }
-      await ax.raise(before.focusedId);
-      out.restored = true;
+      value = await run();
     } catch (error) {
-      if (error instanceof AxPermissionError) permissionLost(error);
-      else out.error = error.message;
+      failure = error;
     }
-    return out;
+    const restored = await guard.restore(snapshot);
+    if (failure) throw failure;
+    return { value, ...guard.fields(restored, 0) };
   }
 
   /** Read-only: never creates a window, never launches Arc. */
@@ -326,7 +366,12 @@ export function createAgentWindowManager({
     const base = {
       mode: config.mode,
       placementRequested: config.placement,
-      accessibility: available ? { available: true } : { available: false, note: axCache.message || ACCESSIBILITY_NOTE },
+      accessibility: available
+        ? { available: true }
+        : axCache.available === false
+          ? { available: false, note: axCache.message || ACCESSIBILITY_NOTE }
+          // Not a refusal: Accessibility could not be asked, typically because Arc is not running.
+          : { available: false, unknown: true, note: `Accessibility could not be checked right now (${axUnreadable}). This is expected while Arc is not running.` },
       stateFile: file,
       ...(config.warnings.length > 0 ? { configWarnings: config.warnings } : {})
     };
@@ -347,7 +392,7 @@ export function createAgentWindowManager({
     }
   }
 
-  return { withWindow, status, currentId, accessibility };
+  return { withWindow, protectFocus, status, currentId, accessibility };
 }
 
 export const agentWindow = createAgentWindowManager({ dir: state.stateDir(), labelOf: state.label });

@@ -57,7 +57,7 @@ export async function openInAgentWindow(args, timeoutMs) {
       ...(done.accessibilityNote ? { accessibilityNote: done.accessibilityNote } : {})
     };
   } catch (error) {
-    if (error instanceof UserActiveError) return userActiveResult(error.gate);
+    if (error instanceof UserActiveError) return userActiveResult(error.gate, error.agentWindow);
     throw error;
   }
 }

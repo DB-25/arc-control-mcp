@@ -62,20 +62,32 @@ export const USER_ACTIVE_ERROR =
   'The user is using the Mac right now (typing or moving the mouse), so nothing was opened and no window was touched. ' +
   'Retry in a little while. Reading and scripting tabs that are already open still works meanwhile.';
 
-/** The failure a gated tool returns when the user never paused. */
-export const userActiveResult = (gate) => ({
+// When the user got busy after the agent window had already been made, "nothing
+// was opened" would be false: the window exists, empty, and is reused next time.
+const userActiveAfterWindowError = (id) =>
+  `The user is using the Mac right now (typing or moving the mouse), so no tab was opened. A new agent window (${id}) ` +
+  'had already been created before they started, and it was left as it is: it is empty and will be reused, not duplicated. ' +
+  'Retry in a little while. Reading and scripting tabs that are already open still works meanwhile.';
+
+/**
+ * The failure a gated tool returns when the user never paused. `agentWindow`
+ * is given when this call had already created the window by then.
+ */
+export const userActiveResult = (gate, agentWindow = null) => ({
   ok: false,
   userActive: true,
-  error: USER_ACTIVE_ERROR,
+  error: agentWindow?.created ? userActiveAfterWindowError(agentWindow.id) : USER_ACTIVE_ERROR,
+  ...(agentWindow?.created ? { agentWindow: { created: true, id: agentWindow.id } } : {}),
   waitedForUserMs: gate.waitedForUserMs,
   ...(gate.idleMs !== undefined ? { userIdleMs: Math.round(gate.idleMs) } : {})
 });
 
 /** Thrown from code that is already past a tool's own gate check. */
 export class UserActiveError extends Error {
-  constructor(gate) {
-    super(USER_ACTIVE_ERROR);
+  constructor(gate, agentWindow = null) {
+    super(agentWindow?.created ? userActiveAfterWindowError(agentWindow.id) : USER_ACTIVE_ERROR);
     this.gate = gate;
+    this.agentWindow = agentWindow;
   }
 }
 
