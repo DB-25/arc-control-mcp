@@ -23,7 +23,7 @@ browser on one operating system, through Apple Events, plus an optional
 [DevTools engine](#cdp-engine) for screenshots, trusted input and
 console/network capture. There is no headless mode. There is also no Docker image, and there
 cannot be one: Apple Events do not cross a container boundary, so a container
-has no way to reach the Arc running on your Mac. This is a 0.3.1 personal
+has no way to reach the Arc running on your Mac. This is a 0.4.0 personal
 project, and the [known limitations](#known-arc-limitations) below are real.
 
 ## Requirements
@@ -207,7 +207,9 @@ is not disturbed, but nothing is walled off.
   reading the page you already have open is useful and harmless. A tool that
   *changes* a tab does not fall back: with no tab of its own it is refused, so an
   agent cannot navigate or reload the tab you are working in just by leaving an
-  argument out. Pass a `tab_id` to address any tab deliberately.
+  argument out. The CDP reads `screenshot`, `console_messages` and
+  `network_requests` follow the changing-tool rule too, since they attach a
+  debugger. Pass a `tab_id` to address any tab deliberately.
 - **Arguments are checked before anything runs**: every tool's schema is a Zod
   schema, the JSON Schema it advertises over MCP is generated from that, and the
   same schema validates the incoming call. A wrong type comes back as
@@ -379,30 +381,44 @@ How it fits together:
   writes a one-time random value into the page's DOM
   (`data-arc-mcp-tab`), and the CDP side looks for it. A target is used only
   after the nonce is found in it, so a different Chromium listening on 9222 can
-  never be driven by mistake. The mapping is cached per tab and revalidated on
-  every use, since a navigation drops the attribute.
+  never be driven by mistake. Only targets at the tab's own address (fragment and
+  trailing slash ignored) are probed, once more after a short wait in case a
+  redirect was still settling, and a target on an origin your
+  [guardrails](#guardrails) forbid is never probed at all. The mapping is cached
+  per tab and revalidated on every use, since a navigation drops the attribute.
+- **Refs and semantic selectors work here too.** `ref=e12`, `role=`, `label=` and
+  `placeholder=` are resolved first on the Apple Event side, where the ref table
+  lives (CDP cannot see Arc's isolated world), which stamps the element with a
+  one-time `data-arc-mcp-target` attribute. The DevTools call then acts on that
+  element and the attribute is removed afterwards. A stale ref fails exactly as in
+  `click`, and `reResolved` is reported.
 - **Tab rules are unchanged.** `tab_id` works as elsewhere, and the tools that
-  change a tab never fall back to the tab you are looking at.
+  change a tab never fall back to the tab you are looking at. `screenshot`,
+  `console_messages` and `network_requests` read, but they attach a debugger, so
+  with no `tab_id` they follow the same rule: a tab the agent opened, or a
+  refusal, never the tab you are on.
 - **Capture starts at first attach.** `console_messages` and `network_requests`
   only see what happened after a CDP tool first touched the tab. CDP has no
   history to read back, so call one before the action you want to observe.
 - **Nothing sensitive is kept.** No request or response bodies, and headers are
-  opt-in with `cookie`, `authorization`, `set-cookie` (and token or API-key
-  style headers) redacted as they arrive. URLs are reported as they are.
+  opt-in with `cookie`, `authorization`, `set-cookie` and any header whose name
+  has `token`, `secret`, `key`, `session` or `signature` in it, or starts with
+  `x-auth`, redacted as they arrive. URLs are shown without their query string
+  and fragment unless `include_query` is set, since queries often carry tokens.
 
 | Tool | Purpose |
 |---|---|
 | `cdp_status` | Whether the engine can be used: port, browser, page target count, the security warning. `ok: false` with setup steps when nothing answers. |
-| `screenshot` | PNG or JPEG (`quality`) as MCP image content: the viewport, `full_page` (capped at 16384 px), or one element by `selector`. Works on a background tab without bringing it forward; `activate: true` is the only way it brings one forward. |
+| `screenshot` | PNG or JPEG (`quality`) as MCP image content: the viewport, `full_page` (capped at 16384 px), or one element by `selector`. Works on a background tab without bringing it forward; `activate: true` is the only way it brings one forward, and then it waits for you to pause like `open_url` does and puts your window and application back afterwards (`focusRestored`). |
 | `trusted_click` | Real mouse click (`isTrusted` true) at the element center after scrolling it into view. `button`, `click_count` (2 gives a `dblclick`). Refuses a disabled control; reports `coveredBy`. |
-| `trusted_type` | Real typing. One `insertText` by default, or `per_key: true` for keydown, keypress, input and keyup per character (search-as-you-type). `clear` replaces the contents. |
+| `trusted_type` | Real typing. One `insertText` by default, or `per_key: true` for keydown, keypress, input and keyup per character (search-as-you-type). `clear` replaces the contents. Fails with `ok: false`, typing nothing, when the field does not take focus. |
 | `trusted_press_key` | Real key events with modifiers: `Enter` submits a form, `Tab` moves focus, `Meta+A` selects all. Reports the focused element afterwards. |
 | `trusted_hover` | Real pointer move; reports whether `:hover` applied. |
 | `drag` | Press, move in steps, release, between selectors or coordinates. Handles native HTML5 drag and drop. |
-| `upload_file` | Set a file input from absolute paths. Refuses relative, missing, non-regular and credential paths (`~/.ssh`, `~/.aws`, Arc's profile, `.env`, and similar). |
+| `upload_file` | Set a file input from absolute paths. Refuses relative, missing, non-regular, credential, shell-history, mail and browser-profile paths (`~/.ssh`, `~/.aws`, Arc and Chrome profiles, Messages, Mail, Safari, Keychains, `.env` and `.env.*`, `.zsh_history`, `.bash_history`, and similar), whatever the letter case of the path. |
 | `handle_dialog` | Accept or dismiss an `alert`, `confirm`, `prompt` or `beforeunload`. Other tools report an open dialog instead of hanging. |
 | `console_messages` | Buffered `console.*`, uncaught exceptions and browser log entries, filterable by `level`. |
-| `network_requests` | Method, url, status, type, timing and size of each request. `include_headers` is opt-in and redacted. No bodies. |
+| `network_requests` | Method, url (no query string unless `include_query`), status, type, timing and size of each request. `include_headers` is opt-in and redacted. No bodies. |
 
 Limits worth knowing: element selectors reach the top-level document only, not
 iframes; a `Meta+` shortcut is sent with its editing command because macOS
@@ -584,7 +600,6 @@ into the model's context, and from there to wherever your client sends it.
 | `ARC_MCP_STATE_DIR` | `~/Library/Application Support/arc-control-mcp` | Where tab ownership is recorded, so a restarted agent can clean up the tabs its previous run left behind. |
 | `ARC_MCP_ARC_DATA_DIR` | `~/Library/Application Support/Arc` | Where the local data tools read Arc's files from. |
 | `ARC_MCP_ALLOW_HISTORY` | unset | Set to `1` to let `search_history` run. Any other value leaves it off. |
-
 | `ARC_MCP_CDP` | on | Set to `0` to disable the [CDP engine](#cdp-engine) entirely: its tools then say so and nothing is probed. |
 | `ARC_MCP_CDP_PORT` | `9222` | The DevTools port to probe on `127.0.0.1`. The host is fixed. A value that is not a port number disables the engine and says why. |
 | `ARC_MCP_ALLOWED_ORIGINS` | unset | Comma list of origins the agent may touch. See [Guardrails](#guardrails). |
@@ -621,12 +636,19 @@ block rule always wins.
 - `open_url` is checked against its target URL before anything opens.
 - Every other tool that changes a page (`click`, `fill`, `fill_form`, `type`,
   `hover`, `select_option`, `press_key`, `scroll`, `execute_javascript`,
-  `go_back`, `go_forward`, `reload_tab`, `stop_loading`, `capture_start`) first
-  reads the target tab's current URL and refuses when it is outside the rules.
+  `go_back`, `go_forward`, `reload_tab`, `stop_loading`, `capture_start`, and the
+  [CDP engine](#cdp-engine)'s page-changing tools `trusted_click`, `trusted_type`,
+  `trusted_press_key`, `trusted_hover`, `drag`, `upload_file` and `handle_dialog`)
+  first reads the target tab's current URL and refuses when it is outside the rules.
   The tab it vetted is the tab it acts on, even when no `tab_id` was passed.
   This costs one extra `osascript` call per changing call. `batch` checks each
   step as it runs.
-- Read tools are allowed unless `ARC_MCP_BLOCK_READS=1`.
+- Read tools are allowed unless `ARC_MCP_BLOCK_READS=1`. That covers the CDP
+  reads (`screenshot`, `console_messages`, `network_requests`) too, and with
+  `activate: true` a screenshot is held back by the activity gate like any other
+  visible operation.
+- The CDP engine never probes (attaches to and runs a script in) a page on an
+  origin the rules forbid, even to work out which target a tab is.
 - Tools that only manage Arc's own tabs (`close_tab`, `switch_to_tab`,
   `close_own_tabs`, `focus_space`) are not origin-gated.
 - A refused call returns `ok: false`, `blocked: true`, `rule`, and an error that
@@ -646,8 +668,9 @@ read-only, and answers a call to any other tool by name with a refusal.
 call: `time`, `tool`, `tab` id, `origin` (scheme and host only, never a path or
 query), `ok`, and `error`. Fill values, typed text and script code are never
 logged. A page's own error message can quote them, so for `fill`, `fill_form`,
-`type`, `select_option` and `execute_javascript` a failure logs that it failed
-without the reason. Each `batch` step is logged as its own call. Refused calls
+`type`, `select_option`, `press_key`, `execute_javascript`, `trusted_type`,
+`trusted_press_key`, `upload_file` and `handle_dialog` a failure logs that it
+failed without the reason. Each `batch` step is logged as its own call. Refused calls
 are logged too. The file is created owner-only.
 
 ## The agent window, and the activity gate
@@ -687,8 +710,15 @@ Creating a window or tab raises it, and with Arc frontmost that takes keyboard
 focus from the window you are typing in. `open_url` therefore records which
 window had focus first and puts it back afterwards (`focusRestored: true` in the
 result). Arc's own scripting cannot do that, so it goes through Accessibility.
-Without Accessibility there is no placement and no restore, and `open_url`
-returns an `accessibilityNote` once saying how to grant it.
+It also records which application was in front, and when Arc took the front
+(creating a window, launching Arc from cold, `screenshot` with `activate`) it
+reactivates that application and checks that it worked: `focusRestored` is true
+only when everything displaced is back, and `focusRestoreError` says what was not.
+Without Accessibility there is no placement and no window restore (the
+application restore still runs), and `open_url` returns an `accessibilityNote`
+once saying how to grant it. While Arc is not running there is nothing to ask
+Accessibility about, which is not a missing grant: Arc is launched and the window
+made as normal.
 
 ### The activity gate
 
@@ -697,12 +727,16 @@ server waits until you have been idle for `ARC_MCP_IDLE_MS` (1500 ms), polling
 every 250 ms for up to `ARC_MCP_IDLE_WAIT_MS` (15 s). Idle time is the HID
 counter from `ioreg -c IOHIDSystem`, which needs no permission. If you never
 pause, the tool returns `ok: false, userActive: true` and an error saying you are
-using the Mac, so the agent should retry later; nothing was opened or moved. On
-success the result carries `waitedForUserMs`. `ARC_MCP_IDLE_MS=0` turns it off.
+using the Mac, so the agent should retry later; nothing was opened or moved. If
+you started typing only after this call had already created the agent window, the
+result says so (`agentWindow: { created: true, id }`): the empty window is kept
+and reused by the next call, never duplicated. On success the result carries
+`waitedForUserMs`. The wait happens before the cross-process lock is taken, never
+while holding it, so another session is not stuck behind your typing. `ARC_MCP_IDLE_MS=0` turns it off.
 
 | Gated (waits for you) | Never gated (background work) |
 |---|---|
-| `open_url` with a new tab, `little_arc` or `activate` | Page scripting and reads on open tabs: `execute_javascript`, `click`, `fill`, `select_option`, `press_key`, `scroll`, `wait_for_*`, `get_*`, `query_elements` |
+| `open_url` with a new tab, `little_arc` or `activate`; `screenshot` with `activate: true` | Page scripting and reads on open tabs: `execute_javascript`, `click`, `fill`, `select_option`, `press_key`, `scroll`, `wait_for_*`, `get_*`, `query_elements` |
 | `switch_to_tab`, `focus_space` | `list_tabs`, `list_spaces`, `get_current_tab`, `arc_status` |
 | Creating the agent window, moving it, and the focus restore itself | `go_back`, `go_forward`, `reload_tab`, `open_url` with `new_tab: false`, `close_tab`, `close_own_tabs` |
 
@@ -868,7 +902,7 @@ remedy. If you see:
 | `Arc did not respond within 30s.` | Arc is showing a modal dialog (a permission prompt, a save sheet) or is stuck loading. Look at the window. |
 | `Not a valid URL: X. Include a scheme, for example https://` | Prefix the URL with `https://`. |
 | `Nothing is listening on 127.0.0.1:9222.` (from a CDP tool) | Arc was not launched with `--remote-debugging-port`. The result carries the steps; see [scripts/arc-cdp-setup.md](scripts/arc-cdp-setup.md). Every non-CDP tool is unaffected. |
-| `Could not find this Arc tab on the DevTools port.` | The port answered, but no page carried the marker written into the tab: a different browser is on the port, or the tab is a page scripts cannot touch (`arc://`, a PDF viewer). Nothing was driven. |
+| `Could not find this Arc tab on the DevTools port.` | The port answered, but no page at the tab's address carried the marker written into the tab: a different browser is on the port, or the tab is a page scripts cannot touch (`arc://`, a PDF viewer), or it navigated meanwhile. Nothing was driven. |
 | `CDP tools need Node 22 or newer` | Upgrade Node. The rest of the server runs on 20. |
 | `A JavaScript dialog is open on this tab` | Call `handle_dialog`. The page cannot run anything until it is dismissed. |
 | `(This is an internal arc-control error, not an Arc or page problem.)` | A bug here. Please [open an issue](https://github.com/DB-25/arc-control-mcp/issues) with the tool, arguments and full error. |
@@ -885,7 +919,8 @@ src/
   registry.js    composes tool modules, validates tool/handler parity at load
   jxa.js         osascript runner, Arc preamble, error mapping
   state.js       per-session tab ownership, cross-process lock
-  agent-window.js  find-or-create the one agent window, focus protection
+  agent-window.js  find-or-create the one agent window
+  focus-guard.js  remembers the user's window and application, puts them back
   placement.js   where the agent window goes (pure geometry)
   ax.js          Accessibility: window placement and focus
   window-config.js  ARC_MCP_WINDOW and ARC_MCP_WINDOW_PLACEMENT
