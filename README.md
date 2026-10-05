@@ -19,8 +19,9 @@ instead of a fresh automation profile. It reads pages, fills forms, clicks
 things, runs JavaScript, and keeps its own tabs separate from yours.
 
 **What it is not:** a cross-platform or cross-browser tool. It drives one
-browser on one operating system through Apple Events. There is no screenshot
-tool, no CDP, and no headless mode. There is also no Docker image, and there
+browser on one operating system, through Apple Events, plus an optional
+[DevTools engine](#cdp-engine) for screenshots, trusted input and
+console/network capture. There is no headless mode. There is also no Docker image, and there
 cannot be one: Apple Events do not cross a container boundary, so a container
 has no way to reach the Arc running on your Mac. This is a 0.3.1 personal
 project, and the [known limitations](#known-arc-limitations) below are real.
@@ -29,7 +30,7 @@ project, and the [known limitations](#known-arc-limitations) below are real.
 
 - macOS
 - [Arc](https://arc.net/) installed
-- Node 20 or newer
+- Node 20 or newer (the [CDP tools](#cdp-engine) need Node 22 or newer, for its built-in `WebSocket`; they fail with a clear message on Node 20 and everything else keeps working)
 
 Two runtime dependencies, `@modelcontextprotocol/sdk` and `zod`. No build step.
 
@@ -235,7 +236,7 @@ loses nothing but a few wasted calls.
 
 ## Tools
 
-26 tools in six modules.
+37 tools in seven modules.
 
 ### Tabs
 
@@ -301,6 +302,75 @@ page can do. `openWorldHint` is true for everything that touches page content,
 and false only for the tools that read or move Arc's own tab and space
 bookkeeping.
 
+### CDP engine
+
+> **Security warning.** This engine talks to Arc over the Chrome DevTools
+> Protocol, and Arc only serves that when **you** launch it with
+> `--remote-debugging-port`. The port is **unauthenticated** and bound to
+> loopback: any process running as you on this Mac can then drive Arc through
+> it, read every page, and use your signed-in sessions, with no prompt. Arc never
+> does this by default, nothing here turns it on for you, and a Sparkle update
+> relaunches Arc without the flag. Turn the engine off with `ARC_MCP_CDP=0`, and
+> close the port by relaunching Arc normally. Read
+> [scripts/arc-cdp-setup.md](scripts/arc-cdp-setup.md) before enabling it.
+
+Everything above works through Apple Events and injected JavaScript, which has
+three hard limits: every event is synthetic (`isTrusted` false), there are no
+screenshots, and a page's console and network are invisible. The CDP engine
+removes them. It is **on by default in the server but inert until Arc exposes
+the port**: the first CDP tool probes `127.0.0.1:9222` (a failed probe is
+remembered for 10 seconds, so it is never paid for per call). If nothing
+answers, every CDP tool returns `ok: false` with the setup steps, and every
+other tool behaves exactly as before.
+
+Setup is three commands (details, the optional launchd healer and the security
+trade-off are in [scripts/arc-cdp-setup.md](scripts/arc-cdp-setup.md)):
+
+```bash
+# 1. Quit Arc (Cmd-Q). It restores your tabs.
+open -a Arc --args --remote-debugging-port=9222    # 2. relaunch with the flag
+curl -s 127.0.0.1:9222/json/version                 # 3. verify
+arc-control-mcp --check-cdp                         # or probe with the CLI, changing nothing
+```
+
+How it fits together:
+
+- **Tabs still come from Apple Events.** CDP only attaches to existing pages;
+  it never creates a target (`Target.createTarget` crashes Arc).
+- **A tab is mapped by a nonce, not by URL or title.** The Apple Event side
+  writes a one-time random value into the page's DOM
+  (`data-arc-mcp-tab`), and the CDP side looks for it. A target is used only
+  after the nonce is found in it, so a different Chromium listening on 9222 can
+  never be driven by mistake. The mapping is cached per tab and revalidated on
+  every use, since a navigation drops the attribute.
+- **Tab rules are unchanged.** `tab_id` works as elsewhere, and the tools that
+  change a tab never fall back to the tab you are looking at.
+- **Capture starts at first attach.** `console_messages` and `network_requests`
+  only see what happened after a CDP tool first touched the tab. CDP has no
+  history to read back, so call one before the action you want to observe.
+- **Nothing sensitive is kept.** No request or response bodies, and headers are
+  opt-in with `cookie`, `authorization`, `set-cookie` (and token or API-key
+  style headers) redacted as they arrive. URLs are reported as they are.
+
+| Tool | Purpose |
+|---|---|
+| `cdp_status` | Whether the engine can be used: port, browser, page target count, the security warning. `ok: false` with setup steps when nothing answers. |
+| `screenshot` | PNG or JPEG (`quality`) as MCP image content: the viewport, `full_page` (capped at 16384 px), or one element by `selector`. Works on a background tab without bringing it forward; `activate: true` is the only way it brings one forward. |
+| `trusted_click` | Real mouse click (`isTrusted` true) at the element center after scrolling it into view. `button`, `click_count` (2 gives a `dblclick`). Refuses a disabled control; reports `coveredBy`. |
+| `trusted_type` | Real typing. One `insertText` by default, or `per_key: true` for keydown, keypress, input and keyup per character (search-as-you-type). `clear` replaces the contents. |
+| `trusted_press_key` | Real key events with modifiers: `Enter` submits a form, `Tab` moves focus, `Meta+A` selects all. Reports the focused element afterwards. |
+| `trusted_hover` | Real pointer move; reports whether `:hover` applied. |
+| `drag` | Press, move in steps, release, between selectors or coordinates. Handles native HTML5 drag and drop. |
+| `upload_file` | Set a file input from absolute paths. Refuses relative, missing, non-regular and credential paths (`~/.ssh`, `~/.aws`, Arc's profile, `.env`, and similar). |
+| `handle_dialog` | Accept or dismiss an `alert`, `confirm`, `prompt` or `beforeunload`. Other tools report an open dialog instead of hanging. |
+| `console_messages` | Buffered `console.*`, uncaught exceptions and browser log entries, filterable by `level`. |
+| `network_requests` | Method, url, status, type, timing and size of each request. `include_headers` is opt-in and redacted. No bodies. |
+
+Limits worth knowing: element selectors reach the top-level document only, not
+iframes; a `Meta+` shortcut is sent with its editing command because macOS
+handles those in the menu bar, not the page; and a JavaScript dialog blocks all
+page access until `handle_dialog` clears it.
+
 ### Selectors
 
 Every selector argument accepts either:
@@ -362,6 +432,8 @@ Tab ids are UUID strings and are not stable across a close and reopen, so call
 | `ARC_MCP_LABEL` | `default` | Names this agent's tab ownership. Two agents with different labels never see each other's owned tabs. |
 | `ARC_MCP_SPACE` | `Agent` | The Arc space new tabs open into, when a space with that name exists. |
 | `ARC_MCP_STATE_DIR` | `~/Library/Application Support/arc-control-mcp` | Where tab ownership is recorded, so a restarted agent can clean up the tabs its previous run left behind. |
+| `ARC_MCP_CDP` | on | Set to `0` to disable the [CDP engine](#cdp-engine) entirely: its tools then say so and nothing is probed. |
+| `ARC_MCP_CDP_PORT` | `9222` | The DevTools port to probe on `127.0.0.1`. The host is fixed. A value that is not a port number disables the engine and says why. |
 
 ## Isolation, and why not a separate window
 
@@ -422,11 +494,12 @@ retry.
 
 ### Limitations of synthetic events
 
-Everything this server does in a page is a synthetic event, dispatched from
-injected JavaScript. Widgets gated on trusted events (`event.isTrusted`) cannot
-be driven that way, and there is no workaround inside this design: Arc's
-`execute javascript` gives no CDP access, so there is no way to inject a real
-input event.
+`click`, `fill` and `press_key` dispatch synthetic events from injected
+JavaScript. Widgets gated on trusted events (`event.isTrusted`) cannot be driven
+that way: Arc's `execute javascript` gives no way to inject a real input event.
+The [CDP engine](#cdp-engine) is the way out (`trusted_click`, `trusted_type`,
+`trusted_press_key`, `drag`), but only when you have launched Arc with the
+DevTools flag. Without it, use the workarounds below.
 
 Verified against Wikipedia's search box. `fill` sets the value correctly, but
 the suggestion dropdown never opens. Hand-dispatching per-character
@@ -438,7 +511,7 @@ The workaround does work, and is usually what you wanted anyway:
 - navigate straight to the search URL with `open_url`.
 
 If a widget only reacts to a suggestion list, a hover preview, or a drag, expect
-it not to react here.
+it not to react to the synthetic tools; use the trusted ones.
 
 ## Troubleshooting
 
@@ -458,6 +531,10 @@ remedy. If you see:
 | `The page script returned nothing recognisable.` | Usually the JavaScript-from-Apple-Events permission, sometimes a tab that navigated mid-call. Retry once, then check the permission. |
 | `Arc did not respond within 30s.` | Arc is showing a modal dialog (a permission prompt, a save sheet) or is stuck loading. Look at the window. |
 | `Not a valid URL: X. Include a scheme, for example https://` | Prefix the URL with `https://`. |
+| `Nothing is listening on 127.0.0.1:9222.` (from a CDP tool) | Arc was not launched with `--remote-debugging-port`. The result carries the steps; see [scripts/arc-cdp-setup.md](scripts/arc-cdp-setup.md). Every non-CDP tool is unaffected. |
+| `Could not find this Arc tab on the DevTools port.` | The port answered, but no page carried the marker written into the tab: a different browser is on the port, or the tab is a page scripts cannot touch (`arc://`, a PDF viewer). Nothing was driven. |
+| `CDP tools need Node 22 or newer` | Upgrade Node. The rest of the server runs on 20. |
+| `A JavaScript dialog is open on this tab` | Call `handle_dialog`. The page cannot run anything until it is dismissed. |
 | `(This is an internal arc-control error, not an Arc or page problem.)` | A bug here. Please [open an issue](https://github.com/DB-25/arc-control-mcp/issues) with the tool, arguments and full error. |
 
 If a tool reports `ok: false` with `timedOut`, that is not an error: it is
@@ -473,6 +550,8 @@ src/
   jxa.js         osascript runner, Arc preamble, error mapping
   state.js       per-session tab ownership
   page-lib.js    helper library injected into the page as `A`
+  result.js      turns a handler result into MCP content (JSON text, or an image)
+  cdp/           the DevTools engine: client, engine, tab mapping, capture, input
   tools/
     shared.js      common schemas and run helpers
     tabs.js        list, switch, close, status
@@ -481,6 +560,10 @@ src/
     interact.js    click, fill, select, keys, scroll, wait for selector
     spaces.js      Arc spaces
     scripting.js   raw JavaScript and batch
+    cdp.js         screenshots, trusted input, console and network capture
+scripts/
+  arc-cdp-setup.md   how to opt in, and what it costs in security
+  arc-cdp-healer.sh  optional launchd helper that re-applies the flag after an update
 ```
 
 Adding a module means creating `tools/<name>.js` exporting `tools` and

@@ -5,6 +5,65 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **CDP engine**, for the three things Apple Events cannot do: real (trusted)
+  input, screenshots, and console and network visibility. It talks to Arc over
+  the Chrome DevTools Protocol using Node's built-in `WebSocket` (Node 22 or
+  newer for these tools only; `engines` is unchanged and everything else runs on
+  20). No new dependencies.
+  - **It is on by default and inert until Arc exposes the port.** The first CDP
+    tool probes `127.0.0.1:9222` (`ARC_MCP_CDP_PORT` changes the port,
+    `ARC_MCP_CDP=0` disables the engine). A failed probe is cached for 10
+    seconds, so ordinary calls never pay for it. With nothing listening, every
+    CDP tool returns `ok: false` plus the setup steps, and every other tool
+    behaves as before. **Arc serves the port only when launched with
+    `--remote-debugging-port`, and that port is unauthenticated: any local
+    process can drive Arc through it.** Read `scripts/arc-cdp-setup.md` first.
+  - A tab is mapped to its CDP target by a one-time random marker that the
+    Apple Event side writes into the page's DOM, never by URL or title. A target
+    is used only after the marker is found in it, so another Chromium on the
+    same port is never driven by mistake. The mapping is cached and revalidated
+    on every use. CDP never creates targets (`Target.createTarget` crashes Arc).
+  - New tools: `cdp_status`, `screenshot` (viewport, `full_page`, or an element;
+    PNG or JPEG; returns MCP image content; works on a background tab),
+    `trusted_click` (`button`, `click_count`), `trusted_type` (`per_key`,
+    `clear`), `trusted_press_key` (modifiers such as `Meta+A`), `trusted_hover`,
+    `drag` (including native HTML5 drag and drop), `upload_file`,
+    `handle_dialog`, `console_messages` and `network_requests`.
+  - A JavaScript dialog opened by an action is reported in that tool's result
+    instead of hanging it, and other CDP tools say a dialog is open and point at
+    `handle_dialog`.
+  - `console_messages` and `network_requests` record from the first time a CDP
+    tool touches a tab (CDP has no history). Bodies are never stored; headers
+    are opt-in and `cookie`, `authorization`, `set-cookie` and token or API-key
+    style headers are redacted as they arrive.
+  - `upload_file` refuses relative paths, missing files, directories and
+    credential or browser-profile files (`~/.ssh`, `~/.aws`, Arc's profile,
+    `.env`, and similar), including through a symlink.
+  - A tool result can now carry an image. `batch` drops it and says so.
+- `arc-control-mcp --check-cdp` probes the port and prints the browser and page
+  count (`npm run check-cdp` does the same). It changes nothing and exits 1 when
+  nothing answers.
+- `scripts/arc-cdp-setup.md`, `scripts/arc-cdp-healer.sh` and a LaunchAgent
+  template. The healer re-applies the flag after a Sparkle update: every 30
+  seconds, and only when Arc is running, the port is closed and Arc started less
+  than 90 seconds ago does it quit Arc gracefully and reopen it with the flag. It
+  waits 10 minutes between attempts, never force-kills, and is not installed by
+  anything in this package.
+
+### Findings
+
+- The first input event sent to a background tab stalls for about five seconds
+  unless focus emulation is on. The trusted tools turn on
+  `Emulation.setFocusEmulationEnabled` once per attached tab, after which input
+  and screenshots on a background tab are immediate and do not bring it forward.
+- A synthetic or CDP `Meta+A` does not select all on macOS by itself, because the
+  menu bar handles it. `trusted_press_key` sends the matching editing command
+  with `Meta` shortcuts (`A`, `C`, `V`, `X`, `Z`).
+
 ## [0.3.1] - 2026-10-05
 
 The 0.3.0 theme continued: three more ways a call could report success for
