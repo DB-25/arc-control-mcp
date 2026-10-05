@@ -122,6 +122,7 @@ export class CdpEngine {
   #connecting = null;
   #failure = null;
   #info = null;
+  #attaching = new Map();
   tabs = new Map();
 
   constructor({ env = process.env, probeFn = probe, connectFn = CdpClient.connect, now = Date.now, failTtlMs = FAILED_PROBE_TTL_MS } = {}) {
@@ -239,9 +240,19 @@ export class CdpEngine {
    * Attach to a page target and start capturing from this moment. Idempotent:
    * a tab keeps one session, and with it one set of console and network buffers.
    */
-  async attach(targetId, options = {}) {
+  attach(targetId, options = {}) {
     const existing = this.tabs.get(targetId);
-    if (existing && !existing.closed) return existing;
+    if (existing && !existing.closed) return Promise.resolve(existing);
+    // Two calls racing to attach one tab must share a session, or each would
+    // buffer half of the events.
+    const running = this.#attaching.get(targetId);
+    if (running) return running;
+    const promise = this.#attach(targetId, options).finally(() => this.#attaching.delete(targetId));
+    this.#attaching.set(targetId, promise);
+    return promise;
+  }
+
+  async #attach(targetId, options) {
     const client = await this.connection();
     const { sessionId } = await client.send('Target.attachToTarget', { targetId, flatten: true }, options);
     const session = client.session(sessionId);

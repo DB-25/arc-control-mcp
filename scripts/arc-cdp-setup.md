@@ -137,7 +137,8 @@ match the server's `ARC_MCP_CDP_PORT`). The thresholds can be changed with
 - Finds the CDP target for an Arc tab by writing a random one-time marker into
   the page through Apple Events and looking for it over CDP. A page without the
   marker is never driven, so another Chromium on the same port cannot be
-  mistaken for Arc.
+  mistaken for Arc. If the tab's URL changed in the meantime, it checks every
+  page for the marker, which reads one DOM attribute and changes nothing.
 - Buffers console and network events only for tabs a CDP tool has touched, in
   memory, capped, with credential headers redacted and no bodies.
 - Refuses to upload relative paths, missing files, directories, and credential

@@ -47,6 +47,25 @@ session.** If that is not acceptable for a given task, use a separate macOS user
 account with its own Arc profile, or a browser automation tool that starts from
 an empty profile.
 
+## The DevTools port, if you open it
+
+The optional CDP engine needs Arc launched with `--remote-debugging-port`, which
+is a decision you make, never one this server makes for you. That port has no
+authentication. While it is open, **any process running as your user can drive
+Arc through it** (read every tab, use your sessions, navigate and type) without
+going through this server and without any prompt. That is a larger exposure than
+the agent connection above, because it is open to all local software, not just
+the one agent you chose.
+
+What this project does about it: it connects only to `127.0.0.1` on the port you
+configure, rebuilds the WebSocket address itself, never creates targets, drives a
+tab only after finding a one-time marker it wrote there (so a different browser
+on the port is never mistaken for Arc), keeps console and network buffers in
+memory with credential headers redacted and no bodies, and refuses to upload
+credential or browser-profile files. What it cannot do is close the port to
+other processes. `ARC_MCP_CDP=0` stops this server using it, and relaunching Arc
+without the flag closes it. See `scripts/arc-cdp-setup.md`.
+
 ## Page content is data, not instructions
 
 Everything this server returns from a page (`get_page_content`, `get_html`,
