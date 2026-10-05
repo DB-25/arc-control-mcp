@@ -213,8 +213,10 @@ is not disturbed, but nothing is walled off.
   puts the previous selection back, and only when Arc actually took it. If the
   user switched tabs while the page was opening, their choice stands. Pass
   `activate: true` to opt out.
-- **Background tabs are fully usable**: tabs in an unfocused space still load,
-  render and script normally, so nothing needs to be brought to the front.
+- **Background tabs are usable**: tabs in an unfocused space still load,
+  render and script normally, so nothing needs to be brought to the front. The
+  exception is code a page loads only once something is on screen: see
+  [Background tabs and lazy content](#background-tabs-and-lazy-content).
 
 Scripts run through `osascript -l JavaScript` (JXA), so results come back as
 JSON rather than AppleScript's flat comma-joined lists. Tool arguments are
@@ -404,6 +406,19 @@ behaviour, not decisions made here.
   quoted and are unwrapped before being returned.
 - `Arc.goBack` does nothing on a background tab, so `go_back` and `go_forward`
   go through the page's own history API instead and verify the URL changed.
+
+### Background tabs and lazy content
+
+A background tab reports `document.hidden`, and nothing in it ever scrolls into
+view, so `IntersectionObserver` callbacks and `loading="lazy"` content can wait
+forever. Some sites load a widget's code that way. On GitHub, the "Customize
+your pins" dialog opens in a background tab but its list never loads, and once
+it is forced to load, the script that enables "Save pins" still never runs.
+
+`click` refuses a disabled control rather than reporting a click the page
+ignored, and says when the tab is hidden. If a control stays disabled after you
+have done what should enable it, `switch_to_tab` (which the user will see) and
+retry.
 
 ### Limitations of synthetic events
 

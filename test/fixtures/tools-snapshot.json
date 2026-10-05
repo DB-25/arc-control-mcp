@@ -514,7 +514,7 @@
   {
     "name": "click",
     "title": "Click",
-    "description": "Click an element. Accepts a CSS selector or \"text=Label\". Scrolls it into view and dispatches a real pointer sequence, so framework handlers fire. \"text=Label\" matches on visible text as a substring, with exact matches ranked first, so a short label also matches longer ones. Check the returned \"matches\" count, and pass exact when it is above 1. Returns urlBefore, the url as it was immediately before the click: the tab snapshot can be taken before a navigation settles, so follow with wait_for_load when the click navigates.",
+    "description": "Click an element. Accepts a CSS selector or \"text=Label\". Scrolls it into view and dispatches a real pointer sequence, so framework handlers fire. \"text=Label\" matches on visible text as a substring, with exact matches ranked first, so a short label also matches longer ones. Check the returned \"matches\" count, and pass exact when it is above 1. Returns urlBefore, the url as it was immediately before the click: the tab snapshot can be taken before a navigation settles, so follow with wait_for_load when the click navigates. A match inside a control (a label span in a button) is checked against that control, returned as \"control\": a disabled one fails with ok false and nothing is clicked.",
     "inputSchema": {
       "type": "object",
       "properties": {

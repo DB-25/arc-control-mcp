@@ -70,7 +70,9 @@ const PAGE_ONE = `<!doctype html><html><head><meta charset="utf-8"><title>arc-co
 const PAGE_TWO = `<!doctype html><html><head><meta charset="utf-8"><title>arc-control page two</title></head>
 <body><h1 id="heading">Page two</h1>
 <p class="row">alpha</p><p class="row">beta</p><p class="row">gamma</p>
-<input id="field" type="text" value=""></body></html>`;
+<input id="field" type="text" value="">
+<button id="locked" disabled onclick="document.body.dataset.clicked='locked'"><span>Locked save</span></button>
+<button id="open" onclick="document.body.dataset.clicked='open'"><span>Open save</span></button></body></html>`;
 
 let urlOne = null;
 let urlTwo = null;
@@ -212,6 +214,27 @@ describe('integration: drives the real Arc browser', () => {
       assert.equal(first.matched, 3);
       assert.equal(first.returned, 1);
       assert.match(first.note, /1 of 3 matches/);
+    });
+  });
+
+  it('click refuses a disabled button found through its label, instead of reporting a click the page ignored', { skip }, async () => {
+    await withTab(urlTwo, async (tabId) => {
+      const locked = await interact.click({ tab_id: tabId, selector: 'text=Locked save', exact: true });
+      assert.equal(locked.ok, false, 'a disabled button swallows the click, so this is not a success');
+      assert.equal(locked.control.tag, 'button');
+      assert.equal(locked.control.disabled, true);
+      assert.match(locked.hint, /background/, 'an agent tab is hidden, and the hint has to say so');
+
+      const label = await content.query_elements({ tab_id: tabId, selector: '#locked span' });
+      assert.equal(label.elements[0].disabled, true, 'a label inside a disabled button reads as disabled');
+
+      const open = await interact.click({ tab_id: tabId, selector: 'text=Open save', exact: true });
+      assert.equal(open.ok, true);
+      assert.equal(open.clicked.tag, 'span');
+      assert.equal(open.control.tag, 'button', 'the control that took the click is reported alongside the match');
+
+      const clicked = await scripting.execute_javascript({ tab_id: tabId, code: 'document.body.dataset.clicked' });
+      assert.equal(clicked.result, 'open', 'only the enabled button ran its handler');
     });
   });
 

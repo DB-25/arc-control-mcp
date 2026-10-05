@@ -36,6 +36,18 @@ function throwIfCancelled(extra) {
   if (extra?.signal?.aborted) throw new ArcError('Cancelled by the caller.');
 }
 
+/**
+ * A page usually enables a control after another step. In a background tab
+ * that step may never come: pages that load a widget's code only once it is on
+ * screen (IntersectionObserver, loading="lazy") never see it come into view.
+ * Found on GitHub's "Save pins" button, which its own script enables.
+ */
+function disabledHint(isHidden) {
+  const base = 'The page enables it after another step, such as a form change or a script loading. Do that step first, then check "disabled" with query_elements before clicking again.';
+  if (!isHidden) return base;
+  return `${base} This tab is in the background (document.hidden), so code a page loads only once it is on screen may never run: switch_to_tab and retry if it stays disabled.`;
+}
+
 const TEXT_NOTE =
   '"text=Label" matches on visible text as a substring, with exact matches ranked first, so a short label also matches longer ones. ' +
   'Check the returned "matches" count, and pass exact when it is above 1.';
@@ -46,7 +58,8 @@ export const tools = [
     description:
       'Click an element. Accepts a CSS selector or "text=Label". Scrolls it into view and dispatches a real pointer sequence, so framework handlers fire. ' +
       TEXT_NOTE +
-      ' Returns urlBefore, the url as it was immediately before the click: the tab snapshot can be taken before a navigation settles, so follow with wait_for_load when the click navigates.',
+      ' Returns urlBefore, the url as it was immediately before the click: the tab snapshot can be taken before a navigation settles, so follow with wait_for_load when the click navigates.' +
+      ' A match inside a control (a label span in a button) is checked against that control, returned as "control": a disabled one fails with ok false and nothing is clicked.',
     input: z.object({
       selector: SELECTOR,
       tab_id: TAB_ID.optional(),
@@ -143,12 +156,25 @@ export const handlers = {
       `var els = A.all(${JSON.stringify(args.selector)}, null, ${matchOpts(args)});
        var el = els[${args.nth ?? 0}];
        if (!el) return { error: 'no_match', matches: els.length };
+       var control = A.control(el);
+       var target = control === el ? undefined : A.describe(control, ${verboseFlag(args)});
+       if (A.disabled(el)) return { error: 'disabled', control: A.describe(control, ${verboseFlag(args)}), matches: els.length, hidden: document.hidden };
        var before = location.href;
        A.click(el);
-       return { clicked: A.describe(el, ${verboseFlag(args)}), matches: els.length, urlBefore: before };`
+       return { clicked: A.describe(el, ${verboseFlag(args)}), control: target, matches: els.length, urlBefore: before };`
     );
     if (result?.error === 'no_match') {
       return { ok: false, error: `No element matches ${args.selector}`, matches: result.matches, tab };
+    }
+    if (result?.error === 'disabled') {
+      return {
+        ok: false,
+        error: `${args.selector} resolves to a disabled <${result.control.tag}>, so a click would do nothing. Nothing was clicked.`,
+        hint: disabledHint(result.hidden),
+        control: result.control,
+        matches: result.matches,
+        tab
+      };
     }
     return { ok: true, ...result, tab };
   },

@@ -94,7 +94,8 @@ var A = (function () {
       value: 'value' in el ? el.value : null,
       href: el.href || null,
       visible: api.visible(el),
-      disabled: !!el.disabled,
+      // The nearest control's state, so a label inside a disabled button reads as disabled.
+      disabled: api.disabled(el),
       checked: 'checked' in el ? !!el.checked : null,
       attrs: attrs
     };
@@ -109,6 +110,22 @@ var A = (function () {
   api.center = function (el) {
     var r = el.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  };
+
+  var CONTROLS = 'button,a[href],input,select,textarea,summary,label,[role=button],[role=link],[role=menuitem],[role=option],[role=tab],[role=checkbox],[role=switch]';
+
+  // "text=Save" usually lands on a label span inside the button, so the
+  // element that decides whether a click does anything is the nearest control.
+  api.control = function (el) {
+    return (el.closest && el.closest(CONTROLS)) || el;
+  };
+
+  // A disabled control drops the click silently, which would otherwise read as
+  // a successful click that the page ignored.
+  api.disabled = function (el) {
+    var c = api.control(el);
+    if (c.matches && c.matches(':disabled')) return true;
+    return !!(c.closest && c.closest('[aria-disabled=true]'));
   };
 
   api.click = function (el) {

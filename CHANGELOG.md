@@ -5,6 +5,25 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `click` reported success on a disabled control. A `text=` match usually lands
+  on a label span inside a button, and the span's own `disabled` was always
+  false, so a click the page swallowed came back as `ok: true`. `click` now
+  checks the nearest control (button, link, input, label, ARIA roles), fails
+  with `ok: false` when it is disabled or inside `aria-disabled="true"`, and
+  returns that control as `control`. Found on GitHub's "Save pins" button.
+- `query_elements` and every other `describe` result report `disabled` for
+  the nearest control, so a label inside a disabled button reads as disabled.
+
+### Documented
+
+- Background tabs never bring anything on screen, so pages that load code
+  through `IntersectionObserver` or `loading="lazy"` may never run it there. The
+  disabled-click error says when the tab is hidden, and the README covers it.
+
 ## [0.3.0] - 2026-08-31
 
 This release is mostly about one class of bug: the server used to report success
