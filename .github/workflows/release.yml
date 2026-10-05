@@ -112,8 +112,35 @@ jobs:
       # credential. --provenance is passed explicitly because npm documents it
       # as automatic under trusted publishing and there are reports of it being
       # skipped without the flag; passing it when it is already on is harmless.
+      # Skipped when the version is already up, so a re-run after a later step
+      # failed (the registry step below, say) does not die on "cannot publish
+      # over the previously published version".
       - name: Publish to npm
-        run: npm publish --provenance
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if npm view "arc-control-mcp@$version" version >/dev/null 2>&1; then
+            echo "arc-control-mcp@$version is already on npm, skipping the publish."
+          else
+            npm publish --provenance
+          fi
+
+      # npm answers the publish before the version is readable ("being
+      # processed"), and the MCP Registry checks npm straight away, so 0.3.1's
+      # registry publish failed with a 404 for a package npm had accepted.
+      - name: Wait until npm serves the new version
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for attempt in $(seq 1 30); do
+            if [ "$(npm view "arc-control-mcp@$version" version 2>/dev/null || true)" = "$version" ]; then
+              echo "npm serves $version (attempt $attempt)."
+              exit 0
+            fi
+            sleep 20
+          done
+          echo "::error::npm still does not serve $version after 10 minutes."
+          exit 1
 
       # Fetched from releases/latest rather than pinned: mcp-publisher talks to
       # a preview registry, and an old client is the more likely failure.
