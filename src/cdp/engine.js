@@ -12,6 +12,7 @@
 import { CdpClient, CdpError, NEEDS_NODE_22, hasWebSocket } from './client.js';
 import { TabCapture } from './capture.js';
 import { TabMapper, MARKER_ATTRIBUTE } from './mapping.js';
+import { POLICY, checkUrl } from '../policy.js';
 
 // Fixed on purpose. A configurable host would let a typo (or a hostile
 // environment) point a session-reading debugger at another machine.
@@ -125,13 +126,14 @@ export class CdpEngine {
   #attaching = new Map();
   tabs = new Map();
 
-  constructor({ env = process.env, probeFn = probe, connectFn = CdpClient.connect, now = Date.now, failTtlMs = FAILED_PROBE_TTL_MS } = {}) {
+  constructor({ env = process.env, probeFn = probe, connectFn = CdpClient.connect, now = Date.now, failTtlMs = FAILED_PROBE_TTL_MS, policy = POLICY, sleep } = {}) {
     this.env = env;
     this.probeFn = probeFn;
     this.connectFn = connectFn;
     this.now = now;
     this.failTtlMs = failTtlMs;
-    this.mapper = new TabMapper(this);
+    // checkUrl is null for a page the guardrails allow: anything else is not probed.
+    this.mapper = new TabMapper(this, { isBlocked: (url) => checkUrl(policy, url) !== null, ...(sleep ? { sleep } : {}) });
   }
 
   config() {

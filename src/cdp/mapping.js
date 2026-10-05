@@ -27,6 +27,11 @@ export function normalizeUrl(url) {
 
 export const urlsMatch = (a, b) => normalizeUrl(a) !== '' && normalizeUrl(a) === normalizeUrl(b);
 
+// A redirect or a late client-side navigation can move the page between the
+// Apple Event that marked it and the target listing. One short wait and one
+// repeat covers that without probing anything else.
+export const RETRY_WAIT_MS = 400;
+
 /**
  * `backend` is the CDP side, injected so the logic runs against fakes:
  *   listPageTargets(): Promise<[{ targetId, url, title }]>
@@ -38,9 +43,16 @@ export class TabMapper {
   #cache = new Map();
   #inflight = new Map();
 
-  constructor(backend, { newNonce = randomUUID } = {}) {
+  /**
+   * `isBlocked(url)` says whether the guardrails forbid touching a page at that
+   * address. Probing means attaching to the page and running a script in it, so
+   * such a target is never probed, whatever its URL says about the tab.
+   */
+  constructor(backend, { newNonce = randomUUID, isBlocked = () => false, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
     this.backend = backend;
     this.newNonce = newNonce;
+    this.isBlocked = isBlocked;
+    this.sleep = sleep;
   }
 
   /** Cached target id for a tab, without validating it. */
@@ -75,28 +87,45 @@ export class TabMapper {
     }
 
     const nonce = this.newNonce();
-    const marked = await markTab(nonce);
-    const targets = await this.backend.listPageTargets();
-
-    // Likely candidates first, but never the only ones: the tab's URL can move
-    // between the Apple Event and the target listing (a redirect settling).
-    const likely = targets.filter((t) => urlsMatch(t.url, marked?.url));
-    const rest = targets.filter((t) => !likely.includes(t));
-    for (const group of [likely, rest]) {
-      for (const target of group) {
+    const probed = { checked: new Set(), blocked: new Set(), listed: 0 };
+    // Only targets at the tab's own address are probed. Attaching to every
+    // page and evaluating in it would run a script in tabs this call has
+    // nothing to do with, on origins the user never asked to touch.
+    const attempt = async (marked) => {
+      const targets = await this.backend.listPageTargets();
+      probed.listed = targets.length;
+      for (const target of targets.filter((t) => urlsMatch(t.url, marked?.url))) {
+        if (this.isBlocked(target.url)) {
+          probed.blocked.add(target.targetId);
+          continue;
+        }
+        probed.checked.add(target.targetId);
         if ((await this.backend.readMarker(target.targetId)) === nonce) {
           this.#cache.set(tabId, { targetId: target.targetId, nonce });
           return target.targetId;
         }
       }
-    }
+      return null;
+    };
 
+    const first = await attempt(await markTab(nonce));
+    if (first) return first;
+    // Marking again is harmless (the same nonce) and reports where the tab is now.
+    await this.sleep(RETRY_WAIT_MS);
+    const second = await attempt(await markTab(nonce));
+    if (second) return second;
+
+    if (probed.checked.size === 0 && probed.blocked.size > 0) {
+      throw new MappingError(
+        `The DevTools target for this tab is on an origin the guardrails block (ARC_MCP_ALLOWED_ORIGINS or ARC_MCP_BLOCKED_ORIGINS), so it was not probed and nothing was driven.`
+      );
+    }
     throw new MappingError(
-      'Could not find this Arc tab on the DevTools port. None of the ' +
-        `${targets.length} page target(s) carried the marker that was just written into the tab. ` +
+      'Could not find this Arc tab on the DevTools port. ' +
+        `${probed.checked.size} page target(s) at the tab's address were checked (of ${probed.listed} on the port) and none carried the marker that was just written into the tab. ` +
         'Either the port belongs to a different browser than Arc (nothing was driven), or the tab ' +
         'is a page scripts cannot touch (arc://, a new-tab page, a PDF viewer), or it was discarded ' +
-        'in the background. Run cdp_status to see what is on the port, and try reloading the tab.'
+        'in the background, or it navigated while this was looking. Run cdp_status to see what is on the port, and try reloading the tab.'
     );
   }
 }

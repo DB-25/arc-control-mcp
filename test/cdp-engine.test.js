@@ -166,7 +166,8 @@ describe('TabMapper', () => {
     async listPageTargets() { return targets; },
     async readMarker(id) { this.reads.push(id); return markers[id] ?? null; }
   });
-  const mapper = (b, nonce = 'N1') => new TabMapper(b, { newNonce: () => nonce });
+  const noSleep = async () => {};
+  const mapper = (b, nonce = 'N1', extra = {}) => new TabMapper(b, { newNonce: () => nonce, sleep: noSleep, ...extra });
 
   it('picks the one target that carries the nonce, even when URLs are identical', async () => {
     const markers = {};
@@ -181,7 +182,7 @@ describe('TabMapper', () => {
     const b = backend([{ targetId: 'X1', url: 'https://a.test/' }, { targetId: 'X2', url: 'https://other.test/' }]);
     await assert.rejects(
       mapper(b).resolve('arc-1', async () => ({ url: 'https://a.test/' })),
-      (e) => e instanceof MappingError && /None of the 2 page target/.test(e.message) && /different browser/.test(e.message)
+      (e) => e instanceof MappingError && /1 page target\(s\) at the tab's address were checked \(of 2 on the port\)/.test(e.message) && /different browser/.test(e.message)
     );
   });
 
@@ -190,11 +191,55 @@ describe('TabMapper', () => {
     await assert.rejects(mapper(b, 'N1').resolve('arc-1', async () => ({ url: 'https://a.test/' })), MappingError);
   });
 
-  it('still finds the tab when its URL moved between the Apple Event and the listing', async () => {
+  it('still finds the tab when its URL moved between the Apple Event and the listing, on the one retry', async () => {
     const markers = {};
     const b = backend([{ targetId: 'T9', url: 'https://redirected.test/final' }], markers);
-    const id = await mapper(b).resolve('arc-1', async (nonce) => { markers.T9 = nonce; return { url: 'https://a.test/start' }; });
+    const waits = [];
+    const m = mapper(b, 'N1', { sleep: async (ms) => { waits.push(ms); } });
+    let call = 0;
+    const id = await m.resolve('arc-1', async (nonce) => {
+      markers.T9 = nonce;
+      // The first Apple Event still saw the old address; by the retry it has settled.
+      return { url: ++call === 1 ? 'https://a.test/start' : 'https://redirected.test/final' };
+    });
     assert.equal(id, 'T9');
+    assert.equal(call, 2);
+    assert.deepEqual(waits, [400], 'one short wait before the retry');
+    assert.deepEqual(b.reads, ['T9'], 'only the matching target was ever probed');
+  });
+
+  it('matches a target whose URL differs only by fragment or trailing slash', async () => {
+    const markers = { T1: 'N1' };
+    const b = backend([{ targetId: 'T1', url: 'https://a.test/page#section-2' }], markers);
+    assert.equal(await mapper(b).resolve('arc-1', async () => ({ url: 'https://a.test/page/' })), 'T1');
+  });
+
+  it('never probes a target at another address, however many pages are open', async () => {
+    const markers = {};
+    const targets = [
+      { targetId: 'SAME', url: 'https://a.test/' },
+      { targetId: 'BANK', url: 'https://bank.test/account' },
+      { targetId: 'MAIL', url: 'https://mail.test/inbox' }
+    ];
+    const b = backend(targets, markers);
+    const id = await mapper(b).resolve('arc-1', async (nonce) => { markers.SAME = nonce; return { url: 'https://a.test/' }; });
+    assert.equal(id, 'SAME');
+    assert.deepEqual(b.reads, ['SAME']);
+    // And when the tab is not found, still only the matching one is touched (twice: the retry).
+    const b2 = backend(targets, {});
+    await assert.rejects(mapper(b2).resolve('arc-2', async () => ({ url: 'https://a.test/' })), MappingError);
+    assert.ok(b2.reads.every((r) => r === 'SAME'), `probed ${b2.reads}`);
+    assert.equal(b2.reads.length, 2);
+  });
+
+  it('never probes a target on an origin the guardrails block, and says why', async () => {
+    const b = backend([{ targetId: 'BANK', url: 'https://bank.test/account' }], { BANK: 'N1' });
+    const m = mapper(b, 'N1', { isBlocked: (url) => url.startsWith('https://bank.test') });
+    await assert.rejects(
+      m.resolve('arc-1', async () => ({ url: 'https://bank.test/account' })),
+      (e) => e instanceof MappingError && /guardrails block/.test(e.message)
+    );
+    assert.deepEqual(b.reads, [], 'not even the marker was read');
   });
 
   it('caches, and revalidates on every use without re-marking while the marker holds', async () => {
@@ -267,7 +312,7 @@ describe('an engine pointed at a browser that never carries the marker', () => {
         return {};
       }
     };
-    const engine = new CdpEngine({ env: {}, probeFn: async () => okProbe, connectFn: async () => client });
+    const engine = new CdpEngine({ env: {}, probeFn: async () => okProbe, connectFn: async () => client, sleep: async () => {} });
     await assert.rejects(engine.mapper.resolve('arc-1', async () => ({ url: 'https://a.test/' })), MappingError);
     assert.deepEqual(
       [...new Set(sent)].sort(),
@@ -359,5 +404,27 @@ describe('arc-control-mcp --check-cdp', () => {
       assert.doesNotMatch(error.stderr, /running on stdio/);
       return true;
     });
+  });
+});
+
+describe('the engine hands the guardrails to the tab mapper', () => {
+  it('does not probe a target the block list forbids, using the real policy rules', async () => {
+    const { loadPolicy } = await import('../src/policy.js');
+    const reads = [];
+    const client = {
+      closed: false, on() {}, onClose() {}, close() {},
+      session: () => { throw new Error('must not attach a tab session'); },
+      send: async (method, params) => {
+        if (method === 'Target.getTargets') return { targetInfos: [{ targetId: 'BANK', type: 'page', url: 'https://www.bank.test/', title: 'b' }] };
+        if (method === 'Target.attachToTarget') { reads.push(params.targetId); return { sessionId: 'S' }; }
+        return { result: { value: null } };
+      }
+    };
+    const engine = new CdpEngine({
+      env: {}, probeFn: async () => okProbe, connectFn: async () => client, sleep: async () => {},
+      policy: loadPolicy({ ARC_MCP_BLOCKED_ORIGINS: '*.bank.test' })
+    });
+    await assert.rejects(engine.mapper.resolve('arc-1', async () => ({ url: 'https://www.bank.test/' })), /guardrails block/);
+    assert.deepEqual(reads, [], 'no attach, so no script ran in the blocked page');
   });
 });
