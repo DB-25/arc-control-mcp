@@ -267,14 +267,20 @@ loses nothing but a few wasted calls.
 | `get_links` | Links with text and resolved href, filterable by substring. |
 | `get_page_info` | Title, URL, ready state, meta description, a headings outline, and counts of links, forms, inputs, buttons and iframes. A cheap first look at an unfamiliar page. |
 
+### Snapshots
+
+| Tool | Purpose |
+|---|---|
+| `snapshot` | The page as a compact tree of roles, accessible names and `[ref=e12]` refs. Options: `interactive_only`, `scope`, `depth`, `max_chars` (a cut is always reported), `boxes`, `diff`. See [Snapshots and refs](#snapshots-and-refs). |
+
 ### Interaction
 
 | Tool | Purpose |
 |---|---|
-| `click` | Scroll into view and dispatch a real pointer sequence, so framework handlers fire. `nth` picks among matches. |
-| `fill` | Set an input, textarea or contenteditable through the native setter, firing `input` and `change`. `submit: true` presses Enter afterwards. |
-| `select_option` | Choose an option by value or visible label. |
-| `press_key` | Dispatch a key press to an element or the focused element. |
+| `click` | Scroll into view and dispatch a real pointer sequence, so framework handlers fire. `nth` picks among matches. Waits for the DOM to settle and reports `settledMs`. |
+| `fill` | Set an input, textarea or contenteditable through the native setter, firing `input` and `change`. `submit: true` presses Enter afterwards. Also settles. |
+| `select_option` | Choose an option by value or visible label. Also settles. |
+| `press_key` | Dispatch a key press to an element or the focused element. Also settles. |
 | `scroll` | Scroll the page by direction and amount, or scroll one element into view. |
 | `wait_for_selector` | Poll until an element is `present`, `visible` or `absent`. |
 
@@ -314,6 +320,13 @@ Every selector argument accepts either:
   than silent; pass `exact: true` to require the whole text, or `nth` to pick a
   different match.
 
+- **`ref=e12`**, a ref from `snapshot`.
+- **`role=button[name="Save"]`**, an ARIA or implicit role with an exact accessible
+  name, or `role=button[name~="sav"]` for a case-insensitive substring. Elements
+  hidden from the accessibility tree are not matched.
+- **`label=Email`** and **`placeholder=Search`**, the control a label names or the
+  field carrying that placeholder. Substring, exact matches first, like `text=`.
+
 `execute_javascript` takes either a bare expression (`document.title`) or a
 statement body (`const rows = [...]; return rows.length`). Which one it used is
 reported as `form`, either `"expression"` or `"statement"`. A statement body
@@ -327,6 +340,55 @@ The `form` field matters because it is what makes a legitimate `null`
 distinguishable from a script that failed, which used to be impossible. If a value
 has no useful JSON representation, for example a DOM node or `window`, the
 response carries a `note` explaining that rather than a bare `{}`.
+
+### Snapshots and refs
+
+`snapshot` reads a page the way a screen reader would, and gives every element a
+ref, so a model can act on what it read instead of guessing selectors:
+
+```
+- heading "Sign in" [level=1] [ref=e3]
+- textbox "Email" [ref=e4] value="a@b.co" (required)
+- button "Sign in" [ref=e5] (disabled)
+```
+
+Then `click` with `selector: "ref=e5"`. Every tool that takes a selector accepts
+a ref, and also `role=`, `label=` and `placeholder=` forms.
+
+- Roles come from ARIA or the element's implicit role. Names come from
+  `aria-labelledby`, `aria-label`, a `<label>`, `alt`, `title`, `placeholder` and
+  text content, capped at 100 characters. States show as `(checked, disabled,
+  expanded, selected, required)`. Password values are never printed.
+- Hidden subtrees (`display: none`, `aria-hidden`, `inert`) are skipped, wrappers
+  with no name are folded away, and open shadow roots and same-origin iframes are
+  walked. A cross-origin frame is marked as not inspected.
+- Refs are stable: the same element keeps its ref across snapshots. If the page
+  re-renders and replaces an element with an identical one (same role, name and
+  position among identical siblings), the old ref is re-resolved and the result
+  carries `reResolved: true`. If the element is gone, or the number of identical
+  siblings changed so the match would be a guess, the call fails and says the ref
+  is stale and to snapshot again. `wait_for_selector` with `state: "absent"` treats
+  a gone ref as absent.
+- `diff: true` returns `unchanged`, or the added or changed and removed lines,
+  against this tab's previous snapshot with the same options.
+- `boxes: true` adds `[box=x,y,w,h]` and `[in-viewport]` or `[offscreen]`, measured
+  with `getBoundingClientRect`, since background tabs never run an
+  `IntersectionObserver`.
+
+Limits: refs belong to one document, so after a navigation snapshot again. A
+closed shadow root cannot be read. Ref re-resolution matches on role and name, so
+if rows with identical labels are reordered a ref can land on a twin, and
+`reResolved` is the signal to check.
+
+### Settling after an action
+
+`click`, `fill`, `select_option` and `press_key` start a `MutationObserver`, act,
+and then poll until the DOM has been quiet for `settle_ms` (default 300, `0` to
+skip) or 1500 ms have passed. The result carries `settledMs` (when the last change
+happened, relative to the action), `settled` and `mutations`. A page still
+changing at the cap reports `settled: false`. The wait costs one extra
+`osascript` round trip, and in a background tab the browser throttles page timers,
+so a delayed update can still arrive after `settled: true`.
 
 ### The page helper library
 

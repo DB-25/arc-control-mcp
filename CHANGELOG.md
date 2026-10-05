@@ -5,6 +5,25 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `snapshot`: the page as a compact indented tree of roles, accessible names and
+  refs (`- button "Save" [ref=e12] (disabled)`). Walks open shadow roots and
+  same-origin iframes, skips hidden subtrees, and takes `interactive_only`,
+  `scope`, `depth`, `max_chars` (truncation is always reported), `boxes` and
+  `diff`.
+- Refs are stable across snapshots, and every selector argument accepts
+  `ref=e12`. A ref whose element was replaced by an identical one is re-resolved
+  by role, name and position and reported as `reResolved: true`; one whose element
+  is gone fails saying it is stale and to snapshot again.
+- Selector forms `role=button[name="Save"]` (`name~=` for a substring),
+  `label=Email` and `placeholder=Search`, in every tool that takes a selector.
+- `click`, `fill`, `select_option` and `press_key` wait for the DOM to go quiet
+  and report `settledMs`, `settled` and `mutations`. `settle_ms` sets the quiet
+  window (default 300, `0` skips, capped at 1500).
+
 ## [0.3.1] - 2026-10-05
 
 The 0.3.0 theme continued: three more ways a call could report success for
