@@ -88,7 +88,11 @@ const SENSITIVE_NAMES = new Set(['.netrc', '.npmrc', '.pypirc', '.git-credential
  */
 export function validateUploadPaths(paths, { home = homedir() } = {}) {
   if (!Array.isArray(paths) || paths.length === 0) throw new ArcError('Give at least one file path.');
-  const sensitive = SENSITIVE_PATHS.map((p) => join(home, p) + sep);
+  // Compared against resolved paths, so the home directory is resolved too:
+  // on macOS a home or volume reached through a symlink would otherwise never match.
+  const homes = [home];
+  try { homes.push(realpathSync(home)); } catch { /* no such home: the raw prefix still applies */ }
+  const sensitive = homes.flatMap((h) => SENSITIVE_PATHS.map((p) => join(h, p) + sep));
   return paths.map((path) => {
     if (!isAbsolute(path)) throw new ArcError(`"${path}" is not an absolute path. Give full paths such as /Users/you/file.pdf; nothing is resolved against a working directory.`);
     if (!existsSync(path)) throw new ArcError(`"${path}" does not exist.`);
